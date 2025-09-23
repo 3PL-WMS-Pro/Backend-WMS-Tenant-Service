@@ -73,3 +73,91 @@ fun TenantDatabaseMapping.toSecureResponse(): SecureTenantResponse {
         updatedAt = this.updatedAt
     )
 }
+
+/**
+ * Request DTO for API 066: Create New Tenant
+ */
+data class CreateTenantRequest(
+    val clientId: Int,
+    val mongoConnection: MongoConnectionConfig,
+    val s3Configuration: S3Configuration,
+    val tenantSettings: TenantSettings
+)
+
+/**
+ * Response DTO for API 066: Create New Tenant
+ * Hides sensitive connection details
+ */
+data class CreateTenantResponse(
+    val clientId: Int,
+    val databaseName: String,
+    val s3Configuration: SecureS3Config,
+    val tenantSettings: TenantSettings,
+    val status: String,
+    val createdAt: LocalDateTime?,
+    val updatedAt: LocalDateTime?
+)
+
+/**
+ * Secure S3 configuration for responses (without credentials)
+ */
+data class SecureS3Config(
+    val bucketName: String,
+    val region: String,
+    val bucketPrefix: String?
+)
+
+/**
+ * Response DTO for API 070: Get Tenant by Client ID
+ */
+data class TenantInfoResponse(
+    val clientId: Int,
+    val status: String,
+    val databaseName: String,
+    val s3Configuration: SecureS3Config,
+    val tenantSettings: TenantSettings?,
+    val connectionHealth: String,
+    val lastConnected: LocalDateTime?,
+    val createdAt: LocalDateTime?,
+    val updatedAt: LocalDateTime?
+)
+
+/**
+ * Response DTO for API 073: Get Tenant by ID
+ */
+data class TenantDetailsResponse(
+    val id: String,
+    val clientId: Int,
+    val status: String,
+    val databaseName: String,
+    val s3Configuration: SecureS3Config,
+    val tenantSettingsSummary: TenantSettingsSummary,
+    val usageStats: UsageStats?,
+    val connectionHealth: String,
+    val createdAt: LocalDateTime?,
+    val updatedAt: LocalDateTime?
+)
+
+/**
+ * Summary of tenant settings for API 073
+ */
+data class TenantSettingsSummary(
+    val autoAssignmentStrategy: String,
+    val slaSettingsConfigured: Boolean
+)
+
+/**
+ * Usage statistics for API 073
+ */
+data class UsageStats(
+    val databaseSizeMb: Double,
+    val totalDocuments: Long,
+    val activeUsersCount: Int,
+    val storageUsedGb: Double
+)
+
+/**
+ * Custom exceptions for tenant operations
+ */
+class DuplicateKeyException(message: String) : RuntimeException(message)
+class ConnectionTestException(message: String) : RuntimeException(message)

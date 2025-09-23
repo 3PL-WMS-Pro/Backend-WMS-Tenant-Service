@@ -111,10 +111,8 @@ app:
     min-pool-size: 2
     connection-timeout-seconds: 10
     max-idle-time-minutes: 10
-  security:
-    jwt:
-      secret: ${JWT_SECRET:your-secret-key-here}
-      expiration: 86400000 # 24 hours in milliseconds
+    service:
+      url: ${TENANT_SERVICE_URL:http://localhost:6010}
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:3001}
     allowed-methods: GET,POST,PUT,DELETE,OPTIONS,PATCH

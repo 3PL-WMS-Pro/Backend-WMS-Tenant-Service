@@ -3,10 +3,12 @@ package com.wmspro.tenant.controller
 import com.wmspro.common.dto.ApiResponse
 import com.wmspro.tenant.dto.*
 import com.wmspro.tenant.model.TenantDatabaseMapping
-import com.wmspro.tenant.model.TenantStatus
+import com.wmspro.tenant.model.TenantSettings
+import com.wmspro.tenant.model.TaskConfiguration
 import com.wmspro.tenant.service.TenantService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
+import org.bson.types.ObjectId
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -16,213 +18,221 @@ import javax.validation.Valid
 /**
  * Controller for tenant database mapping operations
  * Manages central database operations for multi-tenant configuration
+ * Implements APIs 066, 070, 073 from API Specsheet
  */
 @RestController
-@RequestMapping("/api/v1/tenants")
+@RequestMapping("/api/v1")
 @Tag(name = "Tenant Management", description = "APIs for managing tenant database mappings")
 class TenantController(
     private val tenantService: TenantService
 ) {
     private val logger = LoggerFactory.getLogger(TenantController::class.java)
 
-    @PostMapping
-    @Operation(summary = "Create new tenant", description = "Creates a new tenant database mapping")
+    /**
+     * API 066: Create New Tenant
+     * Creates a new tenant with database configuration and initializes their isolated environment
+     */
+    @PostMapping("/tenants")
+    @Operation(
+        summary = "Create New Tenant",
+        description = "Creates a new tenant with database configuration and initializes their isolated environment"
+    )
     fun createTenant(
-        @Valid @RequestBody tenant: TenantDatabaseMapping
-    ): ResponseEntity<ApiResponse<SecureTenantResponse>> {
-        logger.info("Creating new tenant with client ID: ${tenant.clientId}")
+        @Valid @RequestBody request: CreateTenantRequest
+    ): ResponseEntity<ApiResponse<CreateTenantResponse>> {
+        logger.info("Creating new tenant with client ID: ${request.clientId}")
 
         return try {
-            val createdTenant = tenantService.createTenant(tenant)
+            // Validate connections and create tenant
+            val tenant = tenantService.createTenantWithValidation(request)
+
+            // Return secure response without sensitive data
+            val response = CreateTenantResponse(
+                clientId = tenant.clientId,
+                databaseName = tenant.mongoConnection.databaseName,
+                s3Configuration = SecureS3Config(
+                    bucketName = tenant.s3Configuration.bucketName,
+                    region = tenant.s3Configuration.region ?: "us-east-1",
+                    bucketPrefix = tenant.s3Configuration.bucketPrefix
+                ),
+                tenantSettings = tenant.tenantSettings,
+                status = tenant.status.name,
+                createdAt = tenant.createdAt,
+                updatedAt = tenant.updatedAt
+            )
+
             ResponseEntity.status(HttpStatus.CREATED).body(
                 ApiResponse.success(
-                    data = createdTenant.toSecureResponse(),
+                    data = response,
                     message = "Tenant created successfully"
                 )
             )
         } catch (e: IllegalArgumentException) {
             logger.error("Invalid tenant creation request: ${e.message}")
             ResponseEntity.badRequest().body(
-                ApiResponse.error<SecureTenantResponse>(
+                ApiResponse.error<CreateTenantResponse>(
                     message = e.message ?: "Invalid request"
+                )
+            )
+        } catch (e: DuplicateKeyException) {
+            logger.error("Duplicate tenant: ${e.message}")
+            ResponseEntity.status(HttpStatus.CONFLICT).body(
+                ApiResponse.error<CreateTenantResponse>(
+                    message = "Duplicate client_id or database_name"
+                )
+            )
+        } catch (e: ConnectionTestException) {
+            logger.error("Connection test failed: ${e.message}")
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
+                ApiResponse.error<CreateTenantResponse>(
+                    message = "Connection test failed: ${e.message}"
                 )
             )
         } catch (e: Exception) {
             logger.error("Error creating tenant", e)
             ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
-                ApiResponse.error<SecureTenantResponse>(
+                ApiResponse.error<CreateTenantResponse>(
                     message = "Failed to create tenant"
                 )
             )
         }
     }
 
-    @GetMapping("/{clientId}")
-    @Operation(summary = "Get tenant by client ID", description = "Retrieves tenant database mapping by client ID")
-    fun getTenant(
-        @PathVariable clientId: Int
-    ): ResponseEntity<ApiResponse<TenantDatabaseMapping>> {
-        logger.debug("Fetching tenant with client ID: $clientId")
+    /**
+     * API 070: Get Tenant by Client ID
+     * Retrieves tenant information by client ID for administrative purposes
+     */
+    @GetMapping("/tenants/client/{clientId}")
+    @Operation(
+        summary = "Get Tenant by Client ID",
+        description = "Retrieves tenant information by client ID for administrative purposes"
+    )
+    fun getTenantByClientId(
+        @PathVariable clientId: Int,
+        @RequestParam(required = false, defaultValue = "false") includeSettings: Boolean
+    ): ResponseEntity<ApiResponse<TenantInfoResponse>> {
+        logger.debug("Fetching tenant with client ID: $clientId, includeSettings: $includeSettings")
 
         val tenant = tenantService.getTenantByClientId(clientId)
         return if (tenant != null) {
+            val healthStatus = tenantService.checkConnectionHealth(clientId)
+
+            val response = TenantInfoResponse(
+                clientId = tenant.clientId,
+                status = tenant.status.name,
+                databaseName = tenant.mongoConnection.databaseName,
+                s3Configuration = SecureS3Config(
+                    bucketName = tenant.s3Configuration.bucketName,
+                    region = tenant.s3Configuration.region ?: "us-east-1",
+                    bucketPrefix = null // Don't expose prefix in this endpoint
+                ),
+                tenantSettings = if (includeSettings) tenant.tenantSettings else null,
+                connectionHealth = healthStatus,
+                lastConnected = tenant.lastConnected,
+                createdAt = tenant.createdAt,
+                updatedAt = tenant.updatedAt
+            )
+
             ResponseEntity.ok(
                 ApiResponse.success(
-                    data = tenant,
+                    data = response,
                     message = "Tenant retrieved successfully"
                 )
             )
         } else {
             ResponseEntity.status(HttpStatus.NOT_FOUND).body(
-                ApiResponse.error<TenantDatabaseMapping>(
+                ApiResponse.error<TenantInfoResponse>(
                     message = "Tenant not found with client ID: $clientId"
                 )
             )
         }
     }
 
-    @PutMapping("/{clientId}")
-    @Operation(summary = "Update tenant", description = "Updates tenant database mapping")
-    fun updateTenant(
-        @PathVariable clientId: Int,
-        @Valid @RequestBody request: UpdateTenantRequest
-    ): ResponseEntity<ApiResponse<SecureTenantResponse>> {
-        logger.info("Updating tenant with client ID: $clientId")
+    /**
+     * API 073: Get Tenant by ID
+     * Retrieves tenant information by internal tenant ID (MongoDB ObjectId)
+     */
+    @GetMapping("/tenants/{tenantId}")
+    @Operation(
+        summary = "Get Tenant by ID",
+        description = "Retrieves tenant information by internal tenant ID (MongoDB ObjectId)"
+    )
+    fun getTenantById(
+        @PathVariable tenantId: String,
+        @RequestParam(required = false, defaultValue = "false") includeStats: Boolean
+    ): ResponseEntity<ApiResponse<TenantDetailsResponse>> {
+        logger.debug("Fetching tenant with ID: $tenantId, includeStats: $includeStats")
 
         return try {
-            val updates = mutableMapOf<String, Any>()
-            request.status?.let { updates["status"] = it }
-            request.mongoConnection?.let { updates["mongoConnection"] = it }
-            request.s3Configuration?.let { updates["s3Configuration"] = it }
-            request.tenantSettings?.let { updates["tenantSettings"] = it }
-
-            val tenant = tenantService.updateTenant(clientId, updates)
-            ResponseEntity.ok(
-                ApiResponse.success(
-                    data = tenant.toSecureResponse(),
-                    message = "Tenant updated successfully"
+            // Validate ObjectId format
+            if (!ObjectId.isValid(tenantId)) {
+                return ResponseEntity.badRequest().body(
+                    ApiResponse.error<TenantDetailsResponse>(
+                        message = "Invalid ObjectId format: $tenantId"
+                    )
                 )
-            )
-        } catch (e: IllegalArgumentException) {
-            logger.error("Invalid tenant update request: ${e.message}")
-            ResponseEntity.badRequest().body(
-                ApiResponse.error<SecureTenantResponse>(
-                    message = e.message ?: "Invalid request"
-                )
-            )
-        } catch (e: Exception) {
-            logger.error("Error updating tenant", e)
-            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
-                ApiResponse.error<SecureTenantResponse>(
-                    message = "Failed to update tenant"
-                )
-            )
-        }
-    }
+            }
 
-    @DeleteMapping("/{clientId}")
-    @Operation(summary = "Delete tenant", description = "Deletes tenant database mapping")
-    fun deleteTenant(
-        @PathVariable clientId: Int
-    ): ResponseEntity<ApiResponse<Unit>> {
-        logger.info("Deleting tenant with client ID: $clientId")
-
-        return try {
-            tenantService.deleteTenant(clientId)
-            ResponseEntity.ok(
-                ApiResponse.success(
-                    data = Unit,
-                    message = "Tenant deleted successfully"
-                )
-            )
-        } catch (e: IllegalArgumentException) {
-            logger.error("Invalid tenant deletion request: ${e.message}")
-            ResponseEntity.badRequest().body(
-                ApiResponse.error<Unit>(
-                    message = e.message ?: "Invalid request"
-                )
-            )
-        } catch (e: Exception) {
-            logger.error("Error deleting tenant", e)
-            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
-                ApiResponse.error<Unit>(
-                    message = "Failed to delete tenant"
-                )
-            )
-        }
-    }
-
-    @GetMapping
-    @Operation(summary = "List all tenants", description = "Retrieves all tenant database mappings")
-    fun getAllTenants(
-        @RequestParam(required = false) status: String?
-    ): ResponseEntity<ApiResponse<List<TenantSummary>>> {
-        logger.debug("Fetching all tenants with status filter: $status")
-
-        val tenants = if (status != null) {
-            tenantService.getActiveTenants()
-        } else {
-            tenantService.getAllTenants()
-        }
-
-        val summaries = tenants.map { it.toSummary() }
-
-        return ResponseEntity.ok(
-            ApiResponse.success(
-                data = summaries,
-                message = "Tenants retrieved successfully"
-            )
-        )
-    }
-
-    @PostMapping("/{clientId}/validate-connection")
-    @Operation(summary = "Validate tenant connection", description = "Validates MongoDB connection for a tenant")
-    fun validateConnection(
-        @PathVariable clientId: Int
-    ): ResponseEntity<ApiResponse<Map<String, Any>>> {
-        logger.info("Validating connection for tenant: $clientId")
-
-        return try {
-            val tenant = tenantService.getTenantByClientId(clientId)
+            val tenant = tenantService.getTenantById(tenantId)
             if (tenant != null) {
-                tenantService.updateConnectionStatus(clientId, true)
+                val healthStatus = tenantService.checkConnectionHealth(tenant.clientId)
+
+                val response = TenantDetailsResponse(
+                    id = tenant.id ?: "",
+                    clientId = tenant.clientId,
+                    status = tenant.status.name,
+                    databaseName = tenant.mongoConnection.databaseName,
+                    s3Configuration = SecureS3Config(
+                        bucketName = tenant.s3Configuration.bucketName,
+                        region = tenant.s3Configuration.region ?: "us-east-1",
+                        bucketPrefix = null
+                    ),
+                    tenantSettingsSummary = TenantSettingsSummary(
+                        autoAssignmentStrategy = tenant.tenantSettings.taskConfigurations?.autoAssignment?.strategy ?: "ROUND_ROBIN",
+                        slaSettingsConfigured = tenant.tenantSettings.taskConfigurations?.slaSettings != null
+                    ),
+                    usageStats = if (includeStats) {
+                        tenantService.calculateUsageStats(tenant.clientId)
+                    } else null,
+                    connectionHealth = healthStatus,
+                    createdAt = tenant.createdAt,
+                    updatedAt = tenant.updatedAt
+                )
+
                 ResponseEntity.ok(
                     ApiResponse.success(
-                        data = mapOf(
-                            "clientId" to clientId,
-                            "connectionValid" to true,
-                            "databaseName" to tenant.mongoConnection.databaseName
-                        ),
-                        message = "Connection validated successfully"
+                        data = response,
+                        message = "Tenant retrieved successfully"
                     )
                 )
             } else {
                 ResponseEntity.status(HttpStatus.NOT_FOUND).body(
-                    ApiResponse.error<Map<String, Any>>(
-                        message = "Tenant not found"
+                    ApiResponse.error<TenantDetailsResponse>(
+                        message = "Tenant not found with ID: $tenantId"
                     )
                 )
             }
         } catch (e: Exception) {
-            logger.error("Error validating connection", e)
-            ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(
-                ApiResponse.error<Map<String, Any>>(
-                    message = "Connection validation failed: ${e.message}"
+            logger.error("Error fetching tenant by ID", e)
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
+                ApiResponse.error<TenantDetailsResponse>(
+                    message = "Failed to retrieve tenant"
                 )
             )
         }
     }
 
-    @GetMapping("/check/{clientId}")
-    @Operation(summary = "Check tenant exists", description = "Checks if a tenant exists by client ID")
-    fun checkTenantExists(
-        @PathVariable clientId: Int
-    ): ResponseEntity<ApiResponse<Boolean>> {
-        val exists = tenantService.tenantExists(clientId)
-        return ResponseEntity.ok(
-            ApiResponse.success(
-                data = exists,
-                message = if (exists) "Tenant exists" else "Tenant does not exist"
+    // Remove all other methods - they don't belong in this controller
+    @PutMapping("/{clientId}")
+    @Deprecated(message = "This endpoint should not exist in TenantController")
+    @Operation(summary = "Update tenant", description = "Updates tenant database mapping - REMOVED")
+    fun updateTenant(
+        @PathVariable clientId: Int,
+        @Valid @RequestBody request: UpdateTenantRequest
+    ): ResponseEntity<ApiResponse<Any>> {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+            ApiResponse.error<Any>(
+                message = "This endpoint has been removed per API specification"
             )
         )
     }
