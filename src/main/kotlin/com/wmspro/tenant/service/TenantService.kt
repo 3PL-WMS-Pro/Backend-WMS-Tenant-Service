@@ -259,7 +259,7 @@ class TenantService(
         val saved = tenantRepository.save(mapping)
 
         // Initialize collections in tenant database
-        initializeTenantDatabase(saved)
+        // initializeTenantDatabase(saved)
 
         return saved
     }
@@ -314,7 +314,7 @@ class TenantService(
     }
 
     /**
-     * Initializes collections and indexes in tenant database
+     * INITIALIZATION PAUSED FOR NOW - Initializes collections and indexes in tenant database
      */
     private fun initializeTenantDatabase(tenant: TenantDatabaseMapping) {
         logger.info("Initializing database for tenant ${tenant.clientId}")

@@ -33,9 +33,8 @@ class CustomUserRoleMappingRepositoryImpl(
         }
     }
 
-    override fun findUsersWithPermission(clientId: Int, permissionName: String, value: Boolean): List<UserRoleMapping> {
+    override fun findUsersWithPermission(permissionName: String, value: Boolean): List<UserRoleMapping> {
         val query = Query()
-        query.addCriteria(Criteria.where("clientId").`is`(clientId))
         query.addCriteria(Criteria.where("permissions.$permissionName").`is`(value))
         query.addCriteria(Criteria.where("isActive").`is`(true))
 
@@ -61,11 +60,10 @@ class CustomUserRoleMappingRepositoryImpl(
         return result.modifiedCount.toInt()
     }
 
-    override fun findInactiveUsers(clientId: Int, daysInactive: Int): List<UserRoleMapping> {
+    override fun findInactiveUsers(daysInactive: Int): List<UserRoleMapping> {
         val cutoffDate = LocalDateTime.now().minusDays(daysInactive.toLong())
 
         val query = Query()
-        query.addCriteria(Criteria.where("clientId").`is`(clientId))
         query.addCriteria(
             Criteria().orOperator(
                 Criteria.where("lastLogin").lt(cutoffDate),

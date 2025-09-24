@@ -7,6 +7,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Lazy
 import org.springframework.data.mongodb.core.MongoTemplate
+import org.springframework.data.mongodb.core.convert.MongoCustomConversions
 import org.springframework.data.mongodb.core.mapping.MongoMappingContext
 
 /**
@@ -27,11 +28,21 @@ class MongoConfiguration(
     }
 
     /**
-     * MongoDB mapping context for entity mapping
+     * Provide MongoCustomConversions so that Java Time (JSR-310) types and other defaults are registered.
+     * Passing an empty list keeps all store defaults while allowing us to obtain the appropriate SimpleTypeHolder.
      */
     @Bean
-    fun mongoMappingContext(): MongoMappingContext {
-        return MongoMappingContext()
+    fun mongoCustomConversions(): MongoCustomConversions = MongoCustomConversions(emptyList<Any>())
+
+    /**
+     * Properly configured MongoMappingContext using the SimpleTypeHolder from MongoCustomConversions.
+     * This ensures types like java.time.LocalDateTime are treated as simple types and not introspected reflectively.
+     */
+    @Bean
+    fun mongoMappingContext(conversions: MongoCustomConversions): MongoMappingContext {
+        val context = MongoMappingContext()
+        context.setSimpleTypeHolder(conversions.simpleTypeHolder)
+        return context
     }
 
     /**

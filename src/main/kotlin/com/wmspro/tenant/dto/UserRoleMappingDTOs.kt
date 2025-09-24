@@ -2,6 +2,9 @@ package com.wmspro.tenant.dto
 
 import com.wmspro.tenant.model.Permissions
 import com.wmspro.tenant.model.UserRoleMapping
+import jakarta.validation.constraints.Email
+import jakarta.validation.constraints.NotBlank
+import jakarta.validation.constraints.Size
 import java.time.LocalDateTime
 
 /**
@@ -195,4 +198,24 @@ data class PreviousWarehouseInfo(
 data class WarehouseDetails(
     val status: String,
     val zoneCount: Int?
+)
+
+/**
+ * Request for API 074: Create User Role Mapping
+ */
+data class CreateUserRoleMappingRequest(
+    @field:Email
+    @field:NotBlank
+    val email: String,
+
+    @field:NotBlank
+    val roleCode: String,
+
+    @field:Size(min = 1, message = "At least one warehouse must be assigned")
+    val warehouses: List<String>,
+
+    val currentWarehouse: String? = null,
+    val customPermissions: Map<String, Boolean>? = null,
+    val isActive: Boolean? = null,
+    val createdBy: String? = null
 )

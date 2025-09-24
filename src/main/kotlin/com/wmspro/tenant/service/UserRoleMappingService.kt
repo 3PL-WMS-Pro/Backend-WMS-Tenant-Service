@@ -33,39 +33,58 @@ class UserRoleMappingService(
      * API 074: Create User Role Mapping
      */
     @Transactional
-    fun createUserRoleMapping(mapping: UserRoleMapping): UserRoleMapping {
-        logger.info("Creating user role mapping for email: ${mapping.email}")
+    fun createUserRoleMapping(clientId: Int, request: CreateUserRoleMappingRequest): UserRoleMapping {
+        logger.info("Creating user role mapping for email: ${request.email}")
 
         // Normalize email
-        val normalizedEmail = mapping.email.lowercase().trim()
+        val normalizedEmail = request.email.lowercase().trim()
 
         // Check if user already exists for this client
-        if (userRoleMappingRepository.existsByEmailAndClientId(normalizedEmail, mapping.clientId)) {
+        if (userRoleMappingRepository.existsByEmail(normalizedEmail)) {
             throw DuplicateUserException("User role mapping already exists for email: $normalizedEmail")
         }
 
-        // Validate warehouses if provided
-        if (mapping.warehouses.isEmpty()) {
+        // Validate warehouses
+        if (request.warehouses.isEmpty()) {
             throw IllegalArgumentException("At least one warehouse must be assigned")
         }
 
-        // Set current warehouse if not provided
-        val mappingToSave = if (mapping.currentWarehouse.isNullOrBlank()) {
-            mapping.copy(
-                email = normalizedEmail,
-                currentWarehouse = mapping.warehouses.firstOrNull()
-            )
-        } else {
-            mapping.copy(email = normalizedEmail)
+        // Generate next user role code (UR-XXX)
+        val nextCode = userRoleMappingRepository.findTopByOrderByUserRoleCodeDesc()
+            .map { it.userRoleCode }
+            .map { code ->
+                val number = code.substringAfter("UR-").toIntOrNull() ?: 0
+                "UR-${(number + 1).toString().padStart(3, '0')}"
+            }
+            .orElse("UR-001")
+
+        // Build entity with defaults derived from role
+        var mapping = UserRoleMapping.createWithRole(
+            userRoleCode = nextCode,
+            email = normalizedEmail,
+            clientId = clientId,
+            roleCode = request.roleCode,
+            warehouses = request.warehouses,
+            createdBy = request.createdBy
+        )
+
+        // Override current warehouse if provided
+        request.currentWarehouse?.let { current ->
+            if (!request.warehouses.contains(current)) {
+                throw IllegalArgumentException("Current warehouse must be in warehouses list")
+            }
+            mapping = mapping.copy(currentWarehouse = current)
         }
 
-        // Validate current warehouse is in warehouses list
-        if (!mappingToSave.currentWarehouse.isNullOrBlank() &&
-            !mappingToSave.warehouses.contains(mappingToSave.currentWarehouse)) {
-            throw IllegalArgumentException("Current warehouse must be in warehouses list")
+        // Apply optional flags
+        request.customPermissions?.let { custom ->
+            mapping = mapping.copy(customPermissions = custom)
+        }
+        request.isActive?.let { active ->
+            mapping = mapping.copy(isActive = active)
         }
 
-        val saved = userRoleMappingRepository.save(mappingToSave)
+        val saved = userRoleMappingRepository.save(mapping)
         logger.info("Successfully created user role mapping for: ${saved.email}")
         return saved
     }
@@ -174,7 +193,7 @@ class UserRoleMappingService(
         logger.debug("Fetching user role mapping for email: $email")
 
         val normalizedEmail = email.lowercase().trim()
-        val user = userRoleMappingRepository.findByEmailAndClientId(normalizedEmail, clientId).orElse(null)
+        val user = userRoleMappingRepository.findByEmail(normalizedEmail).firstOrNull()
             ?: return null
 
         // Calculate permission stats
@@ -230,7 +249,7 @@ class UserRoleMappingService(
         logger.info("Updating user role mapping for email: $email")
 
         val normalizedEmail = email.lowercase().trim()
-        val existing = userRoleMappingRepository.findByEmailAndClientId(normalizedEmail, clientId).orElse(null)
+        val existing = userRoleMappingRepository.findByEmail(normalizedEmail).firstOrNull()
             ?: return null
 
         val fieldsModified = mutableListOf<String>()
@@ -344,7 +363,7 @@ class UserRoleMappingService(
         logger.info("Deleting user role mapping for email: $email (hard: $hardDelete)")
 
         val normalizedEmail = email.lowercase().trim()
-        val existing = userRoleMappingRepository.findByEmailAndClientId(normalizedEmail, clientId).orElse(null)
+        val existing = userRoleMappingRepository.findByEmail(normalizedEmail).firstOrNull()
             ?: throw IllegalArgumentException("User not found")
 
         // Check if last admin (simplified - in production would check role permissions)
@@ -391,7 +410,7 @@ class UserRoleMappingService(
         logger.debug("Fetching current warehouse for user: $email")
 
         val normalizedEmail = email.lowercase().trim()
-        val user = userRoleMappingRepository.findByEmailAndClientId(normalizedEmail, clientId).orElse(null)
+        val user = userRoleMappingRepository.findByEmail(normalizedEmail).firstOrNull()
             ?: return null
 
         if (!user.isActive) {
@@ -423,7 +442,7 @@ class UserRoleMappingService(
         logger.info("Updating current warehouse for user: $email to $warehouseId")
 
         val normalizedEmail = email.lowercase().trim()
-        val user = userRoleMappingRepository.findByEmailAndClientId(normalizedEmail, clientId).orElse(null)
+        val user = userRoleMappingRepository.findByEmail(normalizedEmail).firstOrNull()
             ?: throw IllegalArgumentException("User not found")
 
         if (!user.isActive) {
@@ -578,12 +597,12 @@ class UserRoleMappingService(
         )
     }
 
-    // Legacy methods for compatibility (can be removed if not needed)
-    fun assignRoleToUser(mapping: UserRoleMapping) = createUserRoleMapping(mapping)
+    // Legacy methods for compatibility (no-ops / placeholders)
+    fun assignRoleToUser(mapping: UserRoleMapping) { /* no-op: deprecated */ }
     fun getUserRoles(userId: String) = listOf<UserRoleMapping>() // Deprecated
     fun getEffectivePermissions(userId: String) = mapOf<String, Any>() // Deprecated
     fun updateUserRole(userId: String, roleCode: String, mapping: UserRoleMapping) = mapping // Deprecated
-    fun removeRoleFromUser(userId: String, roleCode: String) {} // Deprecated
+    fun removeRoleFromUser(userId: String, roleCode: String) { /* no-op: deprecated */ }
     fun getUsersByRole(roleCode: String) = listOf<UserRoleMapping>() // Deprecated
     fun getUsersByTeam(teamCode: String) = listOf<UserRoleMapping>() // Deprecated
 }

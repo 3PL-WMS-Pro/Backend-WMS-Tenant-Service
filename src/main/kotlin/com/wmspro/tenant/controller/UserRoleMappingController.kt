@@ -37,22 +37,22 @@ class UserRoleMappingController(
         description = "Creates a new user role mapping, assigning permissions and warehouse access to a user within a tenant"
     )
     fun createUserRoleMapping(
-        @Valid @RequestBody mapping: UserRoleMapping
+        @Valid @RequestBody request: CreateUserRoleMappingRequest
     ): ResponseEntity<ApiResponse<UserRoleMapping>> {
         val clientId = TenantContext.getCurrentTenant()?.toIntOrNull()
-        logger.info("Creating user role mapping for email: ${mapping.email}, client: $clientId")
+        logger.info("Creating user role mapping for email: ${request.email}, client: $clientId")
 
         return try {
-            // Validate client_id from auth context
-            if (clientId == null || clientId != mapping.clientId) {
+            // Validate tenant context
+            if (clientId == null) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(
                     ApiResponse.error<UserRoleMapping>(
-                        message = "Client ID mismatch or missing tenant context"
+                        message = "Missing tenant context"
                     )
                 )
             }
 
-            val created = userRoleMappingService.createUserRoleMapping(mapping)
+            val created = userRoleMappingService.createUserRoleMapping(clientId, request)
             ResponseEntity.status(HttpStatus.CREATED).body(
                 ApiResponse.success(
                     data = created,

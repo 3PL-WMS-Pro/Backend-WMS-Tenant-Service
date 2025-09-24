@@ -19,17 +19,7 @@ interface UserRoleMappingRepository : MongoRepository<UserRoleMapping, String>, 
     fun findByUserRoleCode(userRoleCode: String): Optional<UserRoleMapping>
 
     /**
-     * Finds a user role mapping by email and client ID
-     */
-    fun findByEmailAndClientId(email: String, clientId: Int): Optional<UserRoleMapping>
-
-    /**
-     * Finds all user role mappings for a client
-     */
-    fun findByClientId(clientId: Int): List<UserRoleMapping>
-
-    /**
-     * Finds all user role mappings for an email
+     * Finds a user role mapping by email
      */
     fun findByEmail(email: String): List<UserRoleMapping>
 
@@ -37,11 +27,6 @@ interface UserRoleMappingRepository : MongoRepository<UserRoleMapping, String>, 
      * Finds all user role mappings for a role
      */
     fun findByRoleCode(roleCode: String): List<UserRoleMapping>
-
-    /**
-     * Finds active user role mappings for a client
-     */
-    fun findByClientIdAndIsActive(clientId: Int, isActive: Boolean): List<UserRoleMapping>
 
     /**
      * Finds user role mappings by warehouse
@@ -55,14 +40,9 @@ interface UserRoleMappingRepository : MongoRepository<UserRoleMapping, String>, 
     fun findByCurrentWarehouse(warehouseId: String): List<UserRoleMapping>
 
     /**
-     * Finds user role mappings for a client and role
+     * Checks if a user role mapping exists by email
      */
-    fun findByClientIdAndRoleCode(clientId: Int, roleCode: String): List<UserRoleMapping>
-
-    /**
-     * Checks if a user role mapping exists
-     */
-    fun existsByEmailAndClientId(email: String, clientId: Int): Boolean
+    fun existsByEmail(email: String): Boolean
 
     /**
      * Checks if a user role mapping exists by code
@@ -75,19 +55,9 @@ interface UserRoleMappingRepository : MongoRepository<UserRoleMapping, String>, 
     fun deleteByUserRoleCode(userRoleCode: String): Long
 
     /**
-     * Deletes all user role mappings for an email and client
+     * Deletes all user role mappings for an email
      */
-    fun deleteByEmailAndClientId(email: String, clientId: Int): Long
-
-    /**
-     * Counts active users for a client
-     */
-    fun countByClientIdAndIsActive(clientId: Int, isActive: Boolean): Long
-
-    /**
-     * Counts users by role for a client
-     */
-    fun countByClientIdAndRoleCode(clientId: Int, roleCode: String): Long
+    fun deleteByEmail(email: String): Long
 
     /**
      * Finds user role mappings created by a specific user
@@ -113,7 +83,7 @@ interface CustomUserRoleMappingRepository {
     /**
      * Finds users with a specific permission
      */
-    fun findUsersWithPermission(clientId: Int, permissionName: String, value: Boolean): List<UserRoleMapping>
+    fun findUsersWithPermission(permissionName: String, value: Boolean): List<UserRoleMapping>
 
     /**
      * Updates user's last login timestamp
@@ -128,7 +98,7 @@ interface CustomUserRoleMappingRepository {
     /**
      * Finds users who haven't logged in for specified days
      */
-    fun findInactiveUsers(clientId: Int, daysInactive: Int): List<UserRoleMapping>
+    fun findInactiveUsers(daysInactive: Int): List<UserRoleMapping>
 
     /**
      * Updates custom permissions for a user

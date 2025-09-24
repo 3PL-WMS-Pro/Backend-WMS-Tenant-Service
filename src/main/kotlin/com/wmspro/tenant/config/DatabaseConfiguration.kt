@@ -24,7 +24,10 @@ class DatabaseConfiguration(
 ) {
 
     override fun doGetMongoDatabase(dbName: String): MongoDatabase {
-        val connectionString = ConnectionString(MongoConnectionStorage.getConnection(central = true))
+        // Use the current ThreadLocal connection if available (tenant-specific),
+        // otherwise fall back to default/central connection.
+        val connectionUri = MongoConnectionStorage.getConnection(central = false)
+        val connectionString = ConnectionString(connectionUri)
         val databaseName = connectionString.database ?: defaultDatabase
         return super.doGetMongoDatabase(databaseName)
     }
