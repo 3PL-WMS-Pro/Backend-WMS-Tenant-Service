@@ -48,15 +48,15 @@ class TenantSettingsController(
             }
 
             val settings = tenantSettingsService.getTenantSettings(tenantId.toInt())
-            if (settings != null) {
-                return ResponseEntity.ok(
+            return if (settings != null) {
+                ResponseEntity.ok(
                     ApiResponse.success(
                         data = settings,
                         message = "Tenant settings retrieved successfully"
                     )
                 )
             } else {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                ResponseEntity.status(HttpStatus.NOT_FOUND).body(
                     ApiResponse.error<TenantSettingsResponse>(
                         message = "Tenant not found"
                     )

@@ -8,7 +8,6 @@ import com.wmspro.tenant.service.UserRoleMappingService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
 import org.slf4j.LoggerFactory
-import org.springframework.data.domain.Page
 import org.springframework.data.domain.PageRequest
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity

@@ -2,8 +2,6 @@ package com.wmspro.tenant.controller
 
 import com.wmspro.common.dto.ApiResponse
 import com.wmspro.tenant.dto.*
-import com.wmspro.tenant.model.TenantDatabaseMapping
-import com.wmspro.tenant.model.TenantSettings
 import com.wmspro.tenant.service.TenantService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
@@ -51,7 +49,7 @@ class TenantController(
                 databaseName = tenant.mongoConnection.databaseName,
                 s3Configuration = SecureS3Config(
                     bucketName = tenant.s3Configuration.bucketName,
-                    region = tenant.s3Configuration.region ?: "us-east-1",
+                    region = tenant.s3Configuration.region ?: "ap-south-1",
                     bucketPrefix = tenant.s3Configuration.bucketPrefix
                 ),
                 tenantSettings = tenant.tenantSettings,
@@ -122,7 +120,7 @@ class TenantController(
                 databaseName = tenant.mongoConnection.databaseName,
                 s3Configuration = SecureS3Config(
                     bucketName = tenant.s3Configuration.bucketName,
-                    region = tenant.s3Configuration.region ?: "us-east-1",
+                    region = tenant.s3Configuration.region ?: "ap-south-1",
                     bucketPrefix = null // Don't expose prefix in this endpoint
                 ),
                 tenantSettings = if (includeSettings) tenant.tenantSettings else null,
