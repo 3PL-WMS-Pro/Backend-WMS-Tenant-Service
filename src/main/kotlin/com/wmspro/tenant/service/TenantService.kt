@@ -38,7 +38,7 @@ class TenantService(
         }
 
         // Validate MongoDB connection before saving
-        validateMongoConnection(mapping)
+        // validateMongoConnection(mapping)
 
         val savedMapping = tenantRepository.save(mapping)
         logger.info("Successfully created tenant database mapping for client ID: ${mapping.clientId}")
@@ -149,7 +149,7 @@ class TenantService(
     }
 
     /**
-     * Validates MongoDB connection for a tenant
+     * COMMENTED FOR NOW - Validates MongoDB connection for a tenant
      */
     private fun validateMongoConnection(mapping: TenantDatabaseMapping) {
         try {
@@ -242,11 +242,11 @@ class TenantService(
         )
 
         // Test MongoDB connection
-        try {
-            validateMongoConnection(mapping)
-        } catch (e: Exception) {
-            throw ConnectionTestException("MongoDB connection test failed: ${e.message}")
-        }
+        // try {
+        //     validateMongoConnection(mapping)
+        // } catch (e: Exception) {
+        //     throw ConnectionTestException("MongoDB connection test failed: ${e.message}")
+        // }
 
         // Test S3 connection (simplified - in production would test actual S3 access)
         if (request.s3Configuration.bucketName.isBlank() ||

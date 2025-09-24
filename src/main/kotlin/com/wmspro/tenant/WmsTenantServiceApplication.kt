@@ -62,7 +62,7 @@ fun main(args: Array<String>) {
             ║    Profile: ${context.environment.activeProfiles.joinToString()}
             ║    Eureka: Enabled
             ║    MongoDB: Connected
-            ╚════════════════════════════════════════════╝
+            ╚════════════════════════════════════════════════╝
 
         """.trimIndent())
 

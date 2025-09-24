@@ -1,5 +1,6 @@
 package com.wmspro.tenant.model
 
+import com.fasterxml.jackson.annotation.JsonAlias
 import org.springframework.data.annotation.Id
 import org.springframework.data.annotation.CreatedDate
 import org.springframework.data.annotation.LastModifiedDate
@@ -41,9 +42,11 @@ data class TenantDatabaseMapping(
  */
 data class MongoConnectionConfig(
     @field:NotBlank(message = "MongoDB URL cannot be blank")
+    @JsonAlias("mongodbUri", "mongoUri", "uri", "connectionUri", "connectionString")
     val url: String,
 
     @field:NotBlank(message = "Database name cannot be blank")
+    @JsonAlias("db", "database")
     val databaseName: String,
 
     val connectionOptions: ConnectionOptions = ConnectionOptions()
