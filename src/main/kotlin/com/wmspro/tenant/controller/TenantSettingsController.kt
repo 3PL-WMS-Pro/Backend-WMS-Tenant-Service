@@ -1,7 +1,7 @@
 package com.wmspro.tenant.controller
 
 import com.wmspro.common.dto.ApiResponse
-import com.wmspro.common.interceptor.TenantContext
+import com.wmspro.common.tenant.TenantContext
 import com.wmspro.tenant.dto.*
 import com.wmspro.tenant.model.TenantSettings
 import com.wmspro.tenant.service.TenantSettingsService
@@ -11,7 +11,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
-import javax.validation.Valid
+import jakarta.validation.Valid
 
 /**
  * Controller for tenant settings operations
@@ -38,7 +38,7 @@ class TenantSettingsController(
         val tenantId = TenantContext.getCurrentTenant()
         logger.debug("Fetching tenant settings for tenant: $tenantId")
 
-        return try {
+        try {
             if (tenantId == null) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(
                     ApiResponse.error<TenantSettingsResponse>(
@@ -49,14 +49,14 @@ class TenantSettingsController(
 
             val settings = tenantSettingsService.getTenantSettings(tenantId.toInt())
             if (settings != null) {
-                ResponseEntity.ok(
+                return ResponseEntity.ok(
                     ApiResponse.success(
                         data = settings,
                         message = "Tenant settings retrieved successfully"
                     )
                 )
             } else {
-                ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
                     ApiResponse.error<TenantSettingsResponse>(
                         message = "Tenant not found"
                     )
@@ -64,7 +64,7 @@ class TenantSettingsController(
             }
         } catch (e: Exception) {
             logger.error("Error fetching tenant settings", e)
-            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
                 ApiResponse.error<TenantSettingsResponse>(
                     message = "Failed to retrieve tenant settings"
                 )

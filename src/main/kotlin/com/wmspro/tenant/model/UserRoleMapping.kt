@@ -62,13 +62,13 @@ data class UserRoleMapping(
         }
 
         /**
-         * Creates a user role mapping with inherited permissions from role type
+         * Creates a user role mapping with default permissions for role
          */
-        fun createFromRoleType(
+        fun createWithRole(
             userRoleCode: String,
             email: String,
             clientId: Int,
-            roleType: RoleType,
+            roleCode: String,
             warehouses: List<String> = emptyList(),
             createdBy: String? = null
         ): UserRoleMapping {
@@ -76,10 +76,10 @@ data class UserRoleMapping(
                 userRoleCode = userRoleCode,
                 email = email.lowercase().trim(),
                 clientId = clientId,
-                roleCode = roleType.roleCode,
+                roleCode = roleCode,
                 warehouses = warehouses,
                 currentWarehouse = warehouses.firstOrNull(),
-                permissions = roleType.defaultPermissions,
+                permissions = PermissionsSchema.defaultForRole(roleCode),
                 customPermissions = emptyMap(),
                 isActive = true,
                 createdBy = createdBy

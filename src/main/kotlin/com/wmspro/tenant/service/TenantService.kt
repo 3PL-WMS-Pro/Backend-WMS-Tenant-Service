@@ -108,7 +108,7 @@ class TenantService(
         }
 
         // Clear cached connection for this tenant
-        com.wmspro.common.mongo.MongoConnectionStorage.removeCachedConnection(clientId.toString())
+        // Note: TenantConnectionFetcher handles cache clearing
 
         tenantRepository.deleteByClientId(clientId)
         logger.info("Successfully deleted tenant database mapping for client ID: $clientId")
@@ -270,11 +270,8 @@ class TenantService(
     fun getTenantById(tenantId: String): TenantDatabaseMapping? {
         logger.debug("Fetching tenant by ID: $tenantId")
 
-        return if (ObjectId.isValid(tenantId)) {
-            tenantRepository.findById(tenantId).orElse(null)
-        } else {
-            null
-        }
+        val clientId = tenantId.toIntOrNull() ?: return null
+        return tenantRepository.findByClientId(clientId).orElse(null)
     }
 
     /**

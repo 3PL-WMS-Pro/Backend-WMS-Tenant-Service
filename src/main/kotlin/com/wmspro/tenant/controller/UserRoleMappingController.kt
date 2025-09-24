@@ -1,7 +1,7 @@
 package com.wmspro.tenant.controller
 
 import com.wmspro.common.dto.ApiResponse
-import com.wmspro.common.interceptor.TenantContext
+import com.wmspro.common.tenant.TenantContext
 import com.wmspro.tenant.dto.*
 import com.wmspro.tenant.model.UserRoleMapping
 import com.wmspro.tenant.service.UserRoleMappingService
@@ -13,7 +13,7 @@ import org.springframework.data.domain.PageRequest
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
-import javax.validation.Valid
+import jakarta.validation.Valid
 
 /**
  * Controller for user role mapping operations
@@ -265,7 +265,7 @@ class UserRoleMappingController(
         @RequestHeader(required = false) confirmationHeader: String?
     ): ResponseEntity<ApiResponse<DeletionResponse>> {
         val clientId = TenantContext.getCurrentTenant()?.toIntOrNull()
-        val requestingUser = TenantContext.getCurrentUser() // Assume this exists or get from JWT
+        val requestingUser = "system" // TODO: Get from JWT/security context when implemented
         logger.info("Deleting user role mapping for email: $email, hard: $hardDelete")
 
         return try {

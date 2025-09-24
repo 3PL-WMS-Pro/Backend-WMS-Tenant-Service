@@ -7,16 +7,15 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Lazy
 import org.springframework.data.mongodb.core.MongoTemplate
-import org.springframework.data.mongodb.repository.config.EnableMongoRepositories
+import org.springframework.data.mongodb.core.mapping.MongoMappingContext
 
 /**
  * MongoDB configuration following LTR-Backend pattern exactly
  * Simple and clean with single lazy MongoTemplate
  */
 @Configuration
-@EnableMongoRepositories(basePackages = ["com.wmspro.tenant.repository"])
 class MongoConfiguration(
-    @Value("\${spring.data.mongodb.uri:mongodb://localhost:27017/wms_central}")
+    @Value("\${spring.data.mongodb.uri:mongodb://flybizdigi:FlyBizDigi%40123@cloud.leadtorev.com:27170/wms_pro_tenants?authSource=admin&readPreference=primary}")
     private val centralMongoUri: String
 ) {
 
@@ -28,13 +27,21 @@ class MongoConfiguration(
     }
 
     /**
+     * MongoDB mapping context for entity mapping
+     */
+    @Bean
+    fun mongoMappingContext(): MongoMappingContext {
+        return MongoMappingContext()
+    }
+
+    /**
      * Single lazy MongoTemplate bean - exactly like LTR-Backend
-     * Gets connection from ThreadLocal storage, uses central DB as fallback
+     * Uses DatabaseConfiguration to handle dynamic database switching
      */
     @Bean
     @Lazy
     fun mongoTemplate(): MongoTemplate {
-        val connectionString = ConnectionString(MongoConnectionStorage.getConnection(central = true))
-        return MongoTemplate(DatabaseConfiguration(connectionString))
+        val connectionUri = MongoConnectionStorage.getConnection(central = true)
+        return MongoTemplate(DatabaseConfiguration(connectionUri, "wms_pro_tenants"))
     }
 }

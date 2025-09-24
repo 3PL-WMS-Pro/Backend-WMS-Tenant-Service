@@ -6,7 +6,7 @@ import org.springframework.data.annotation.LastModifiedDate
 import org.springframework.data.mongodb.core.index.Indexed
 import org.springframework.data.mongodb.core.mapping.Document
 import java.time.LocalDateTime
-import javax.validation.constraints.*
+import jakarta.validation.constraints.*
 
 /**
  * TenantDatabaseMapping Model - Maps tenants to their databases and stores tenant-specific settings
@@ -78,7 +78,7 @@ data class S3Configuration(
     val bucketName: String,
 
     @field:NotBlank(message = "Region cannot be blank")
-    val region: String = "us-east-1",
+    val region: String = "ap-south-1",
 
     @field:NotBlank(message = "Access key cannot be blank")
     val accessKey: String,

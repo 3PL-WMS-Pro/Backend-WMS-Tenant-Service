@@ -9,7 +9,7 @@ spring:
   data:
     mongodb:
       # Full URI including database name - exactly like LTR-Backend
-      uri: ${MONGODB_URI:mongodb://localhost:27017/wms_central}
+      uri: ${MONGODB_URI:mongodb://flybizdigi:FlyBizDigi%40123@cloud.leadtorev.com:27170/wms_pro_tenants?authSource=admin&readPreference=primary}
       auto-index-creation: true
 
   # Cache Configuration
@@ -128,8 +128,8 @@ spring:
       on-profile: dev
   data:
     mongodb:
-      uri: mongodb://localhost:27017
-      central-database: wms_central_dev
+      uri: mongodb://flybizdigi:FlyBizDigi%40123@cloud.leadtorev.com:27170/wms_pro_tenants?authSource=admin&readPreference=primary
+      central-database: wms_pro_tenants
 
 logging:
   level:
@@ -145,7 +145,7 @@ spring:
   data:
     mongodb:
       uri: ${MONGODB_URI}
-      central-database: ${CENTRAL_DB_NAME:wms_central}
+      central-database: ${CENTRAL_DB_NAME:wms_pro_tenants}
 
 logging:
   level:

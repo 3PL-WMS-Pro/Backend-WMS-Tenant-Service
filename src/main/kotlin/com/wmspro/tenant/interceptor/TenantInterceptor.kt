@@ -1,7 +1,7 @@
 package com.wmspro.tenant.interceptor
 
 import com.wmspro.common.constants.GlobalConstants
-import com.wmspro.common.interceptor.TenantContext
+import com.wmspro.common.tenant.TenantContext
 import com.wmspro.common.mongo.MongoConnectionStorage
 import com.wmspro.common.utils.TenantConnectionFetcher
 import jakarta.servlet.http.HttpServletRequest

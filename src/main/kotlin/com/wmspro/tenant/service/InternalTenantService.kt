@@ -48,11 +48,11 @@ class InternalTenantService(
         return MongoConnectionResponse(
             url = tenant.mongoConnection.url,
             databaseName = tenant.mongoConnection.databaseName,
-            connectionOptions = tenant.mongoConnection.connectionOptions ?: mapOf(
-                "maxPoolSize" to 10,
-                "minPoolSize" to 2,
-                "retryWrites" to true,
-                "w" to "majority"
+            connectionOptions = mapOf(
+                "maxPoolSize" to tenant.mongoConnection.connectionOptions.maxPoolSize,
+                "minPoolSize" to tenant.mongoConnection.connectionOptions.minPoolSize,
+                "retryWrites" to tenant.mongoConnection.connectionOptions.retryWrites,
+                "w" to tenant.mongoConnection.connectionOptions.w
             )
         )
     }
@@ -156,9 +156,9 @@ class InternalTenantService(
             else -> {
                 // Handle nested fields in task configurations
                 if (fieldName == "slaSettings" || fieldName == "sla_settings") {
-                    settings.taskConfigurations?.get("slaSettings")
+                    settings.taskConfigurations.slaSettings
                 } else if (fieldName == "autoAssignment" || fieldName == "auto_assignment") {
-                    settings.taskConfigurations?.get("autoAssignment")
+                    settings.taskConfigurations.autoAssignment
                 } else {
                     null
                 }

@@ -4,7 +4,6 @@ import com.wmspro.common.dto.ApiResponse
 import com.wmspro.tenant.dto.*
 import com.wmspro.tenant.model.TenantDatabaseMapping
 import com.wmspro.tenant.model.TenantSettings
-import com.wmspro.tenant.model.TaskConfiguration
 import com.wmspro.tenant.service.TenantService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
@@ -13,7 +12,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
-import javax.validation.Valid
+import jakarta.validation.Valid
 
 /**
  * Controller for tenant database mapping operations
@@ -178,18 +177,18 @@ class TenantController(
                 val healthStatus = tenantService.checkConnectionHealth(tenant.clientId)
 
                 val response = TenantDetailsResponse(
-                    id = tenant.id ?: "",
+                    id = tenant.clientId.toString(),
                     clientId = tenant.clientId,
                     status = tenant.status.name,
                     databaseName = tenant.mongoConnection.databaseName,
                     s3Configuration = SecureS3Config(
                         bucketName = tenant.s3Configuration.bucketName,
-                        region = tenant.s3Configuration.region ?: "us-east-1",
+                        region = tenant.s3Configuration.region ?: "ap-south-1",
                         bucketPrefix = null
                     ),
                     tenantSettingsSummary = TenantSettingsSummary(
-                        autoAssignmentStrategy = tenant.tenantSettings.taskConfigurations?.autoAssignment?.strategy ?: "ROUND_ROBIN",
-                        slaSettingsConfigured = tenant.tenantSettings.taskConfigurations?.slaSettings != null
+                        autoAssignmentStrategy = tenant.tenantSettings.taskConfigurations.autoAssignment.strategy.name,
+                        slaSettingsConfigured = tenant.tenantSettings.taskConfigurations.slaSettings != null
                     ),
                     usageStats = if (includeStats) {
                         tenantService.calculateUsageStats(tenant.clientId)

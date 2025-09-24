@@ -152,44 +152,11 @@ data class DeletionResponse(
 
 /**
  * Response for API 079: Get User's Current Warehouse
+ * Simplified to only include essential warehouse identification
  */
 data class CurrentWarehouseResponse(
-    val warehouseId: String,
-    val warehouseName: String,
-    val warehouseCode: String,
-    val address: WarehouseAddress,
-    val operationalStatus: String,
-    val zoneCount: Int?,
-    val totalBins: Int?,
-    val userPermissions: WarehousePermissions,
-    val isAuthorized: Boolean,
-    val lastSelectedAt: LocalDateTime?
-)
-
-/**
- * Warehouse address details
- */
-data class WarehouseAddress(
-    val street: String,
-    val city: String,
-    val state: String?,
-    val zip: String,
-    val country: String
-)
-
-/**
- * Warehouse-specific permissions
- */
-data class WarehousePermissions(
-    val canOffload: Boolean,
-    val canReceive: Boolean,
-    val canPutaway: Boolean,
-    val canPick: Boolean,
-    val canPackMove: Boolean,
-    val canPickPackMove: Boolean,
-    val canLoad: Boolean,
-    val canCount: Boolean,
-    val canTransfer: Boolean
+    val warehouseCode: String,  // warehouseId and code are the same
+    val warehouseName: String
 )
 
 /**
@@ -226,7 +193,6 @@ data class PreviousWarehouseInfo(
  * Warehouse details for update response
  */
 data class WarehouseDetails(
-    val address: WarehouseAddress,
     val status: String,
     val zoneCount: Int?
 )

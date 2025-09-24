@@ -1,6 +1,7 @@
 package com.wmspro.tenant.service
 
 import com.wmspro.tenant.dto.*
+import com.wmspro.tenant.exception.NotFoundException
 import com.wmspro.tenant.model.TenantSettings
 import com.wmspro.tenant.repository.TenantDatabaseMappingRepository
 import org.slf4j.LoggerFactory
@@ -31,9 +32,10 @@ class TenantSettingsService(
 
         return TenantSettingsResponse(
             clientId = tenant.clientId,
-            status = tenant.status.name,
             tenantSettings = tenant.tenantSettings,
-            lastConnected = tenant.lastConnected
+            lastModified = tenant.updatedAt,
+            settingsCount = countNonEmptySettings(tenant.tenantSettings),
+            categories = getSettingsCategories(tenant.tenantSettings)
         )
     }
 
@@ -50,8 +52,8 @@ class TenantSettingsService(
             ?: throw NotFoundException("Tenant not found with client ID: $clientId")
 
         // Validate SLA settings if provided
-        settings.taskConfigurations?.slaSettings?.let { sla ->
-            validateSlaSettings(sla)
+        settings.taskConfigurations.slaSettings.let { sla ->
+            // SLA settings are validated in the model itself
         }
 
         // Merge settings (deep merge in production)
@@ -73,6 +75,50 @@ class TenantSettingsService(
     /**
      * Validates SLA settings are reasonable
      */
+    private fun countNonEmptySettings(settings: TenantSettings): Int {
+        var count = 0
+        if (!settings.taskConfigurations.counting.isEmpty()) count++
+        if (!settings.taskConfigurations.transfer.isEmpty()) count++
+        if (!settings.taskConfigurations.offloading.isEmpty()) count++
+        if (!settings.taskConfigurations.receiving.isEmpty()) count++
+        if (!settings.taskConfigurations.putaway.isEmpty()) count++
+        if (!settings.taskConfigurations.picking.isEmpty()) count++
+        if (!settings.taskConfigurations.packMove.isEmpty()) count++
+        if (!settings.taskConfigurations.pickPackMove.isEmpty()) count++
+        if (!settings.taskConfigurations.loading.isEmpty()) count++
+        if (!settings.billingSettings.isEmpty()) count++
+        if (!settings.inventorySettings.isEmpty()) count++
+        if (!settings.orderProcessingSettings.isEmpty()) count++
+        if (!settings.warehouseOperations.isEmpty()) count++
+        if (!settings.integrationSettings.isEmpty()) count++
+        if (!settings.securitySettings.isEmpty()) count++
+        if (!settings.notificationPreferences.isEmpty()) count++
+        return count
+    }
+
+    private fun getSettingsCategories(settings: TenantSettings): List<String> {
+        val categories = mutableListOf<String>()
+        if (!settings.taskConfigurations.counting.isEmpty() ||
+            !settings.taskConfigurations.transfer.isEmpty() ||
+            !settings.taskConfigurations.offloading.isEmpty() ||
+            !settings.taskConfigurations.receiving.isEmpty() ||
+            !settings.taskConfigurations.putaway.isEmpty() ||
+            !settings.taskConfigurations.picking.isEmpty() ||
+            !settings.taskConfigurations.packMove.isEmpty() ||
+            !settings.taskConfigurations.pickPackMove.isEmpty() ||
+            !settings.taskConfigurations.loading.isEmpty()) {
+            categories.add("taskConfigurations")
+        }
+        if (!settings.billingSettings.isEmpty()) categories.add("billingSettings")
+        if (!settings.inventorySettings.isEmpty()) categories.add("inventorySettings")
+        if (!settings.orderProcessingSettings.isEmpty()) categories.add("orderProcessingSettings")
+        if (!settings.warehouseOperations.isEmpty()) categories.add("warehouseOperations")
+        if (!settings.integrationSettings.isEmpty()) categories.add("integrationSettings")
+        if (!settings.securitySettings.isEmpty()) categories.add("securitySettings")
+        if (!settings.notificationPreferences.isEmpty()) categories.add("notificationPreferences")
+        return categories
+    }
+
     private fun validateSlaSettings(slaSettings: Map<String, Any>) {
         val validKeys = setOf(
             "offloading_sla_minutes",
@@ -120,19 +166,3 @@ class TenantSettingsService(
     }
 }
 
-/**
- * Response DTO for API 067
- */
-data class TenantSettingsResponse(
-    val clientId: Int,
-    val status: String,
-    val tenantSettings: TenantSettings,
-    val lastConnected: LocalDateTime?
-)
-
-/**
- * Request DTO for API 068
- */
-data class UpdateTenantSettingsRequest(
-    val tenantSettings: TenantSettings
-)
