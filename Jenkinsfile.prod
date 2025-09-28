@@ -1,0 +1,29 @@
+pipeline {
+  agent {
+    node {
+      label 'wms-prod-server'
+    }
+
+  }
+  stages {
+    stage('Generate Jar Files') {
+      steps {
+        sh '''mvn clean install'''
+      }
+    }
+    stage('Delete the old containers') {
+      steps {
+        sh '''sudo systemctl stop wms-tenant-service
+        sudo rm -rf ~/wms-backend/wms-tenant-service/*
+        sudo cp -r target/*.jar ~/wms-backend/wms-tenant-service/
+        sudo chown -R leadtorev:leadtorev ~/wms-backend/wms-tenant-service/
+        sudo mv ~/wms-backend/wms-tenant-service/*.jar ~/wms-backend/wms-tenant-service/app.jar'''
+      }
+    }
+    stage('Run the updated dockers') {
+      steps {
+        sh '''sudo systemctl start wms-tenant-service'''
+      }
+    }
+  }
+}
