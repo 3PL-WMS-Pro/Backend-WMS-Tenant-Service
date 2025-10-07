@@ -155,16 +155,11 @@ class TenantService(
         try {
             // Build connection string and test it
             val connectionString = "${mapping.mongoConnection.url}/${mapping.mongoConnection.databaseName}"
-            val connectionTest = com.mongodb.ConnectionString(connectionString)
 
-            // Try to create a client and test connection
-            val settings = com.mongodb.MongoClientSettings.builder()
-                .applyConnectionString(connectionTest)
-                .build()
-
-            val client = com.mongodb.client.MongoClients.create(settings)
+            // CRITICAL FIX: Use cached client from DatabaseConfiguration instead of creating new one
+            val client = com.wmspro.tenant.config.DatabaseConfiguration.getOrCreateClient(connectionString)
             client.listDatabaseNames().first() // This will trigger connection test
-            client.close()
+            // NOTE: Don't close - it's cached and reused
 
             logger.info("Successfully validated MongoDB connection for client ID: ${mapping.clientId}")
         } catch (e: Exception) {
@@ -283,14 +278,11 @@ class TenantService(
 
             // Test MongoDB connection
             val connectionString = "${tenant.mongoConnection.url}/${tenant.mongoConnection.databaseName}"
-            val connectionTest = com.mongodb.ConnectionString(connectionString)
-            val settings = com.mongodb.MongoClientSettings.builder()
-                .applyConnectionString(connectionTest)
-                .build()
 
-            val client = com.mongodb.client.MongoClients.create(settings)
+            // CRITICAL FIX: Use cached client from DatabaseConfiguration instead of creating new one
+            val client = com.wmspro.tenant.config.DatabaseConfiguration.getOrCreateClient(connectionString)
             client.listDatabaseNames().first()
-            client.close()
+            // NOTE: Don't close - it's cached and reused
 
             "HEALTHY"
         } catch (e: Exception) {
@@ -322,12 +314,9 @@ class TenantService(
         try {
             // Create MongoDB client for tenant database
             val connectionString = "${tenant.mongoConnection.url}/${tenant.mongoConnection.databaseName}"
-            val connectionTest = com.mongodb.ConnectionString(connectionString)
-            val settings = com.mongodb.MongoClientSettings.builder()
-                .applyConnectionString(connectionTest)
-                .build()
 
-            val client = com.mongodb.client.MongoClients.create(settings)
+            // CRITICAL FIX: Use cached client from DatabaseConfiguration instead of creating new one
+            val client = com.wmspro.tenant.config.DatabaseConfiguration.getOrCreateClient(connectionString)
             val database = client.getDatabase(tenant.mongoConnection.databaseName)
 
             // Create collections
@@ -354,7 +343,7 @@ class TenantService(
             userRoleCollection.createIndex(com.mongodb.client.model.Indexes.ascending("email"))
             userRoleCollection.createIndex(com.mongodb.client.model.Indexes.ascending("client_id"))
 
-            client.close()
+            // NOTE: Don't close - it's cached and reused
             logger.info("Successfully initialized database for tenant ${tenant.clientId}")
         } catch (e: Exception) {
             logger.error("Failed to initialize database for tenant ${tenant.clientId}", e)
