@@ -28,6 +28,7 @@ class TenantInterceptor(
         private val CENTRAL_DB_PATHS = listOf(
             "/api/v1/tenants",  // All tenant management operations use central DB (includes internal)
             "/api/v1/tenant-settings", // Tenant settings also use central DB
+            "/api/v1/document-templates", // Document templates stored centrally (global shared templates)
             "/actuator",
             "/health",
             "/info",

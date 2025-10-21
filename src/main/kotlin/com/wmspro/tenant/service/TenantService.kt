@@ -228,6 +228,7 @@ class TenantService(
         // Create tenant mapping
         val mapping = TenantDatabaseMapping(
             clientId = request.clientId,
+            tenantName = request.tenantName,
             mongoConnection = request.mongoConnection,
             s3Configuration = request.s3Configuration,
             tenantSettings = request.tenantSettings,

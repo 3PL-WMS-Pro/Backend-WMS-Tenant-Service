@@ -79,6 +79,7 @@ fun TenantDatabaseMapping.toSecureResponse(): SecureTenantResponse {
  */
 data class CreateTenantRequest(
     val clientId: Int,
+    val tenantName: String,
     val mongoConnection: MongoConnectionConfig,
     val s3Configuration: S3Configuration,
     val tenantSettings: TenantSettings
