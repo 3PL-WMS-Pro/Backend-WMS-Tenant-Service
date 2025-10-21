@@ -72,6 +72,7 @@ class DefaultTemplateSeeder(
             "showOwner" to true,
             "showCompany" to true,
             "showReceiptNumber" to true,
+            "showASNNumber" to true,
             "showExternalReceipt" to false,
             "showCustomerRef" to false,
             "showWarehouseRef" to false,
@@ -143,6 +144,10 @@ class DefaultTemplateSeeder(
                     <span class="label">Receipt #:</span>
                     <span class="value" th:text="${"$"}{data.receiptNumber}">-</span>
                 </div>
+                <div class="info-row" th:if="${"$"}{documentConfig.showASNNumber}">
+                    <span class="label">ASN Number:</span>
+                    <span class="value" th:text="${"$"}{data.asnNumber ?: 'N/A'}">-</span>
+                </div>
                 <div class="info-row" th:if="${"$"}{documentConfig.showCustomerRef}">
                     <span class="label">Customer Ref:</span>
                     <span class="value" th:text="${"$"}{data.customerRef ?: '-'}">-</span>
@@ -211,7 +216,7 @@ class DefaultTemplateSeeder(
                 <tr>
                     <th th:if="${"$"}{documentConfig.showSKU}">SKU</th>
                     <th th:if="${"$"}{documentConfig.showDescription}">Description</th>
-                    <th th:if="${"$"}{documentConfig.showExpectedQty}">Expected Qty</th>
+                    <th th:if="${"$"}{documentConfig.showExpectedQty && data.asnNumber != null}">Expected Qty</th>
                     <th th:if="${"$"}{documentConfig.showReceivedQty}">Received Qty</th>
                     <th th:if="${"$"}{documentConfig.showDamage}">Damage</th>
                     <th th:if="${"$"}{documentConfig.showShortExcess}">Short/Excess</th>
@@ -226,7 +231,7 @@ class DefaultTemplateSeeder(
                 <tr th:each="item : ${"$"}{data.items}">
                     <td th:if="${"$"}{documentConfig.showSKU}" th:text="${"$"}{item.itemCode}">-</td>
                     <td th:if="${"$"}{documentConfig.showDescription}" th:text="${"$"}{item.description}">-</td>
-                    <td th:if="${"$"}{documentConfig.showExpectedQty}" th:text="${"$"}{item.expectedQty}">-</td>
+                    <td th:if="${"$"}{documentConfig.showExpectedQty && data.asnNumber != null}" th:text="${"$"}{item.expectedQty}">-</td>
                     <td th:if="${"$"}{documentConfig.showReceivedQty}" th:text="${"$"}{item.receivedQty}">-</td>
                     <td th:if="${"$"}{documentConfig.showDamage}" th:text="${"$"}{item.damage}">-</td>
                     <td th:if="${"$"}{documentConfig.showShortExcess}" th:text="${"$"}{item.shortExcess}">-</td>
@@ -241,7 +246,7 @@ class DefaultTemplateSeeder(
                 <tr class="totals-row">
                     <td th:if="${"$"}{documentConfig.showSKU}" class="total-label">TOTAL:</td>
                     <td th:if="${"$"}{documentConfig.showDescription}"></td>
-                    <td th:if="${"$"}{documentConfig.showExpectedQty}" th:text="${"$"}{data.totalExpected}">0</td>
+                    <td th:if="${"$"}{documentConfig.showExpectedQty && data.asnNumber != null}" th:text="${"$"}{data.totalExpected}">0</td>
                     <td th:if="${"$"}{documentConfig.showReceivedQty}" th:text="${"$"}{data.totalReceived}">0</td>
                     <td th:if="${"$"}{documentConfig.showDamage}" th:text="${"$"}{data.totalDamage}">0</td>
                     <td th:if="${"$"}{documentConfig.showShortExcess}" th:text="${"$"}{data.totalShortExcess}">0</td>
