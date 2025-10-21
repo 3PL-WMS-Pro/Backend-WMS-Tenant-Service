@@ -219,10 +219,10 @@ class DefaultTemplateSeeder(
                     <th th:if="${"$"}{documentConfig.showExpectedQty && data.asnNumber != null}">Expected Qty</th>
                     <th th:if="${"$"}{documentConfig.showReceivedQty}">Received Qty</th>
                     <th th:if="${"$"}{documentConfig.showDamage}">Damage</th>
-                    <th th:if="${"$"}{documentConfig.showShortExcess}">Short/Excess</th>
-                    <th th:if="${"$"}{documentConfig.showLength}">Length</th>
-                    <th th:if="${"$"}{documentConfig.showWidth}">Width</th>
-                    <th th:if="${"$"}{documentConfig.showHeight}">Height</th>
+                    <th th:if="${"$"}{documentConfig.showShortExcess && data.asnNumber != null}">Short/Excess</th>
+                    <th th:if="${"$"}{documentConfig.showLength}">Length (cm)</th>
+                    <th th:if="${"$"}{documentConfig.showWidth}">Width (cm)</th>
+                    <th th:if="${"$"}{documentConfig.showHeight}">Height (cm)</th>
                     <th th:if="${"$"}{documentConfig.showCBM}">CBM</th>
                     <th th:if="${"$"}{documentConfig.showWeight}">WEIGHT</th>
                 </tr>
@@ -234,7 +234,7 @@ class DefaultTemplateSeeder(
                     <td th:if="${"$"}{documentConfig.showExpectedQty && data.asnNumber != null}" th:text="${"$"}{item.expectedQty}">-</td>
                     <td th:if="${"$"}{documentConfig.showReceivedQty}" th:text="${"$"}{item.receivedQty}">-</td>
                     <td th:if="${"$"}{documentConfig.showDamage}" th:text="${"$"}{item.damage}">-</td>
-                    <td th:if="${"$"}{documentConfig.showShortExcess}" th:text="${"$"}{item.shortExcess}">-</td>
+                    <td th:if="${"$"}{documentConfig.showShortExcess && data.asnNumber != null}" th:text="${"$"}{item.shortExcess}">-</td>
                     <td th:if="${"$"}{documentConfig.showLength}" th:text="${"$"}{item.length ?: '-'}">-</td>
                     <td th:if="${"$"}{documentConfig.showWidth}" th:text="${"$"}{item.width ?: '-'}">-</td>
                     <td th:if="${"$"}{documentConfig.showHeight}" th:text="${"$"}{item.height ?: '-'}">-</td>
@@ -249,7 +249,7 @@ class DefaultTemplateSeeder(
                     <td th:if="${"$"}{documentConfig.showExpectedQty && data.asnNumber != null}" th:text="${"$"}{data.totalExpected}">0</td>
                     <td th:if="${"$"}{documentConfig.showReceivedQty}" th:text="${"$"}{data.totalReceived}">0</td>
                     <td th:if="${"$"}{documentConfig.showDamage}" th:text="${"$"}{data.totalDamage}">0</td>
-                    <td th:if="${"$"}{documentConfig.showShortExcess}" th:text="${"$"}{data.totalShortExcess}">0</td>
+                    <td th:if="${"$"}{documentConfig.showShortExcess && data.asnNumber != null}" th:text="${"$"}{data.totalShortExcess}">0</td>
                     <td th:if="${"$"}{documentConfig.showLength}"></td>
                     <td th:if="${"$"}{documentConfig.showWidth}"></td>
                     <td th:if="${"$"}{documentConfig.showHeight}"></td>
