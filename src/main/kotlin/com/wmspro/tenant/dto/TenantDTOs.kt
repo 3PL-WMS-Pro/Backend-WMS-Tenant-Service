@@ -113,6 +113,7 @@ data class SecureS3Config(
  */
 data class TenantInfoResponse(
     val clientId: Int,
+    val tenantName: String,
     val status: String,
     val databaseName: String,
     val s3Configuration: SecureS3Config,

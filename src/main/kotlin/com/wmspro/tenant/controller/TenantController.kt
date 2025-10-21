@@ -116,6 +116,7 @@ class TenantController(
 
             val response = TenantInfoResponse(
                 clientId = tenant.clientId,
+                tenantName = tenant.tenantName,
                 status = tenant.status.name,
                 databaseName = tenant.mongoConnection.databaseName,
                 s3Configuration = SecureS3Config(
