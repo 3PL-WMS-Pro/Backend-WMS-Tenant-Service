@@ -28,6 +28,8 @@ class InternalTenantService(
 
     /**
      * Gets database connection for internal services (API 069)
+     * FIXED: Removed lastConnected update to prevent data loss on frequent calls
+     * Use updateConnectionStatus() API explicitly if you need to track last connection
      */
     fun getDatabaseConnection(clientId: Int): MongoConnectionResponse? {
         logger.debug("Retrieving database connection for client ID: $clientId")
@@ -40,9 +42,8 @@ class InternalTenantService(
             throw InactiveTenantException("Tenant $clientId is inactive")
         }
 
-        // Update last connected timestamp
-        val updatedTenant = tenant.copy(lastConnected = LocalDateTime.now())
-        tenantRepository.save(updatedTenant)
+        // REMOVED: Don't save on every connection fetch - this was causing tenantName to be lost
+        // The frequent saves were overwriting the entire document and losing manually added fields
 
         // Return decrypted connection (in production, decrypt here)
         return MongoConnectionResponse(

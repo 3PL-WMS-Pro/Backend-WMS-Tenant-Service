@@ -9,6 +9,9 @@ import org.slf4j.LoggerFactory
 import org.springframework.cache.annotation.CacheEvict
 import org.springframework.cache.annotation.Cacheable
 import org.springframework.data.mongodb.core.MongoTemplate
+import org.springframework.data.mongodb.core.query.Criteria
+import org.springframework.data.mongodb.core.query.Query
+import org.springframework.data.mongodb.core.query.Update
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.LocalDateTime
@@ -131,21 +134,25 @@ class TenantService(
     }
 
     /**
-     * Updates tenant connection status
+     * Updates tenant connection status using atomic field update
+     * FIXED: Only updates lastConnected field without overwriting entire document
      */
     @Transactional
     @CacheEvict(value = ["tenantMappings"], key = "#clientId")
     fun updateConnectionStatus(clientId: Int, connected: Boolean) {
-        val tenant = getTenantByClientId(clientId)
-            ?: throw IllegalArgumentException("Tenant with client ID $clientId not found")
-
-        val updatedTenant = if (connected) {
-            tenant.copy(lastConnected = LocalDateTime.now())
-        } else {
-            tenant
+        if (!tenantRepository.existsByClientId(clientId)) {
+            throw IllegalArgumentException("Tenant with client ID $clientId not found")
         }
 
-        tenantRepository.save(updatedTenant)
+        if (connected) {
+            // Use atomic update to only modify lastConnected field
+            // This prevents overwriting other fields like tenantName
+            val query = Query(Criteria.where("clientId").`is`(clientId))
+            val update = Update().set("lastConnected", LocalDateTime.now())
+            mongoTemplate.updateFirst(query, update, TenantDatabaseMapping::class.java)
+
+            logger.debug("Updated lastConnected timestamp for tenant $clientId using atomic update")
+        }
     }
 
     /**
