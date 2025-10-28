@@ -449,11 +449,6 @@ class UserRoleMappingService(
             throw InactiveUserException("User is inactive")
         }
 
-        // Validate warehouse ID format (assuming ObjectId)
-        if (!ObjectId.isValid(warehouseId)) {
-            throw IllegalArgumentException("Invalid warehouse ID format")
-        }
-
         // Check if warehouse is in user's authorized list
         if (!user.warehouses.contains(warehouseId)) {
             throw UnauthorizedWarehouseException("Warehouse not in user's authorized list")
