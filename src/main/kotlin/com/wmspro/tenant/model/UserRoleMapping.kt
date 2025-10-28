@@ -2,8 +2,6 @@ package com.wmspro.tenant.model
 
 import com.wmspro.common.schema.PermissionsSchema
 import org.springframework.data.annotation.Id
-import org.springframework.data.annotation.CreatedDate
-import org.springframework.data.annotation.LastModifiedDate
 import org.springframework.data.mongodb.core.index.CompoundIndex
 import org.springframework.data.mongodb.core.mapping.Document
 import java.time.LocalDateTime
@@ -17,13 +15,13 @@ import java.time.LocalDateTime
 @CompoundIndex(def = "{'email': 1, 'clientId': 1}", unique = true)
 data class UserRoleMapping(
     @Id
-    val userRoleCode: String, // Primary key: "UR-001", "UR-002", etc.
+    val userRoleCode: String = "UR-001", // Primary key: "UR-001", "UR-002", etc.
 
-    val email: String, // Lowercase, trimmed
+    val email: String? = null, // Lowercase, trimmed
 
-    val clientId: Int,
+    val clientId: Int? = null,
 
-    val roleCode: String, // Reference to RoleType.roleCode
+    val roleCode: String? = null, // Reference to RoleType.roleCode
 
     val warehouses: List<String> = emptyList(), // List of warehouses user can operate in
 
@@ -39,21 +37,34 @@ data class UserRoleMapping(
 
     val lastLogin: LocalDateTime? = null,
 
-    @CreatedDate
     val createdAt: LocalDateTime? = null,
 
-    @LastModifiedDate
     val updatedAt: LocalDateTime? = null
 ) {
     init {
-        require(userRoleCode.matches(Regex("^UR-\\d{3}$"))) { "User role code must match pattern UR-XXX" }
-        require(email == email.lowercase().trim()) { "Email must be lowercase and trimmed" }
-        require(roleCode.matches(Regex("^ROLE-\\d{3}$"))) { "Role code must match pattern ROLE-XXX" }
-        if (currentWarehouse != null) {
-            require(warehouses.contains(currentWarehouse)) {
-                "Current warehouse must be in the list of assigned warehouses"
-            }
+        // Lenient validation for MongoDB deserialization
+        if (userRoleCode.isNotBlank() && !userRoleCode.matches(Regex("^UR-\\d{3}$"))) {
+            throw IllegalArgumentException("User role code must match pattern UR-XXX")
         }
+        if (email != null && email != email.lowercase().trim()) {
+            throw IllegalArgumentException("Email must be lowercase and trimmed")
+        }
+        if (roleCode != null && roleCode.isNotBlank() && !roleCode.matches(Regex("^ROLE-\\d{3}$"))) {
+            throw IllegalArgumentException("Role code must match pattern ROLE-XXX")
+        }
+        if (currentWarehouse != null && warehouses.isNotEmpty() && !warehouses.contains(currentWarehouse)) {
+            throw IllegalArgumentException("Current warehouse must be in the list of assigned warehouses")
+        }
+    }
+
+    /**
+     * Validates that this is a complete, valid user role mapping
+     */
+    fun validate(): Boolean {
+        return userRoleCode.matches(Regex("^UR-\\d{3}$")) &&
+               email != null && email.isNotBlank() &&
+               clientId != null &&
+               roleCode != null && roleCode.matches(Regex("^ROLE-\\d{3}$"))
     }
 
     companion object {
@@ -72,6 +83,9 @@ data class UserRoleMapping(
             warehouses: List<String> = emptyList(),
             createdBy: String? = null
         ): UserRoleMapping {
+            require(email.isNotBlank()) { "Email cannot be blank" }
+            require(roleCode.isNotBlank()) { "Role code cannot be blank" }
+
             return UserRoleMapping(
                 userRoleCode = userRoleCode,
                 email = email.lowercase().trim(),

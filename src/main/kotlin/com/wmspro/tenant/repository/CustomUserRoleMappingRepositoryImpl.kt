@@ -25,8 +25,8 @@ class CustomUserRoleMappingRepositoryImpl(
 
         val lastMapping = mongoTemplate.findOne(query, UserRoleMapping::class.java)
 
-        return if (lastMapping != null && lastMapping.roleCode.startsWith("USR")) {
-            val lastNumber = lastMapping.roleCode.substring(3).toIntOrNull() ?: 0
+        return if (lastMapping != null && lastMapping.roleCode?.startsWith("USR") == true) {
+            val lastNumber = lastMapping.roleCode?.substring(3)?.toIntOrNull() ?: 0
             "USR${(lastNumber + 1).toString().padStart(6, '0')}"
         } else {
             "USR000001"

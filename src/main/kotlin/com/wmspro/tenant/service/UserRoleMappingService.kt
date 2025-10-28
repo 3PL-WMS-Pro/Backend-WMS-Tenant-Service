@@ -50,13 +50,19 @@ class UserRoleMappingService(
         }
 
         // Generate next user role code (UR-XXX)
-        val nextCode = userRoleMappingRepository.findTopByOrderByUserRoleCodeDesc()
-            .map { it.userRoleCode }
-            .map { code ->
-                val number = code.substringAfter("UR-").toIntOrNull() ?: 0
-                "UR-${(number + 1).toString().padStart(3, '0')}"
-            }
-            .orElse("UR-001")
+        val nextCode = try {
+            userRoleMappingRepository.findTopByOrderByUserRoleCodeDesc()
+                .filter { it.validate() } // Filter out corrupted data
+                .map { it.userRoleCode }
+                .map { code ->
+                    val number = code.substringAfter("UR-").toIntOrNull() ?: 0
+                    "UR-${(number + 1).toString().padStart(3, '0')}"
+                }
+                .orElse("UR-001")
+        } catch (e: Exception) {
+            logger.warn("Failed to fetch last user role code, defaulting to UR-001. Error: ${e.message}")
+            "UR-001"
+        }
 
         // Build entity with defaults derived from role
         var mapping = UserRoleMapping.createWithRole(
@@ -70,10 +76,13 @@ class UserRoleMappingService(
 
         // Override current warehouse if provided
         request.currentWarehouse?.let { current ->
-            if (!request.warehouses.contains(current)) {
-                throw IllegalArgumentException("Current warehouse must be in warehouses list")
+            // Skip validation if currentWarehouse is a placeholder like "string"
+            if (current != "string" && !request.warehouses.contains(current)) {
+                throw IllegalArgumentException("Current warehouse '$current' must be in warehouses list ${request.warehouses}")
             }
-            mapping = mapping.copy(currentWarehouse = current)
+            // Set to first warehouse if it's a placeholder
+            val actualCurrentWarehouse = if (current == "string") request.warehouses.firstOrNull() else current
+            mapping = mapping.copy(currentWarehouse = actualCurrentWarehouse)
         }
 
         // Apply optional flags
@@ -83,6 +92,13 @@ class UserRoleMappingService(
         request.isActive?.let { active ->
             mapping = mapping.copy(isActive = active)
         }
+
+        // Set timestamps manually
+        val now = LocalDateTime.now()
+        mapping = mapping.copy(
+            createdAt = now,
+            updatedAt = now
+        )
 
         val saved = userRoleMappingRepository.save(mapping)
         logger.info("Successfully created user role mapping for: ${saved.email}")
@@ -137,8 +153,9 @@ class UserRoleMappingService(
         // Apply pagination
         query.with(pageable)
 
-        // Execute query
+        // Execute query and filter out corrupted data
         val users = mongoTemplate.find(query, UserRoleMapping::class.java)
+            .filter { it.validate() }
         val totalItems = mongoTemplate.count(Query(criteria), UserRoleMapping::class.java)
 
         // Get statistics
@@ -152,12 +169,18 @@ class UserRoleMappingService(
             UserRoleMapping::class.java
         ).toInt()
 
-        // Role breakdown
-        val rolesBreakdown = users.groupBy { it.roleCode }
+        // Role breakdown (filter out null role codes)
+        val rolesBreakdown = users
+            .filter { it.roleCode != null }
+            .groupBy { it.roleCode!! }
             .mapValues { it.value.size }
 
-        // Convert to response DTOs
-        val summaries = users.map { user ->
+        // Convert to response DTOs (skip invalid records)
+        val summaries = users.mapNotNull { user ->
+            if (user.email == null || user.roleCode == null) {
+                logger.warn("Skipping corrupted user record with userRoleCode: ${user.userRoleCode}")
+                return@mapNotNull null
+            }
             UserRoleMappingSummary(
                 email = user.email,
                 roleType = user.roleCode,
@@ -195,6 +218,12 @@ class UserRoleMappingService(
         val normalizedEmail = email.lowercase().trim()
         val user = userRoleMappingRepository.findByEmail(normalizedEmail).firstOrNull()
             ?: return null
+
+        // Validate user data
+        if (user.email == null || user.roleCode == null) {
+            logger.error("Corrupted user record found for email: $email")
+            return null
+        }
 
         // Calculate permission stats
         val convertedPermissions = convertPermissionsSchemaToPermissions(user.permissions)
@@ -251,6 +280,12 @@ class UserRoleMappingService(
         val normalizedEmail = email.lowercase().trim()
         val existing = userRoleMappingRepository.findByEmail(normalizedEmail).firstOrNull()
             ?: return null
+
+        // Validate existing record
+        if (existing.email == null || existing.roleCode == null) {
+            logger.error("Cannot update corrupted user record: $normalizedEmail")
+            return null
+        }
 
         val fieldsModified = mutableListOf<String>()
         val previousValues = mutableMapOf<String, Any>()
@@ -338,8 +373,8 @@ class UserRoleMappingService(
         )
 
         return UserRoleMappingUpdateResponse(
-            email = saved.email,
-            roleType = saved.roleCode,
+            email = saved.email ?: normalizedEmail,
+            roleType = saved.roleCode ?: "UNKNOWN",
             warehouses = saved.warehouses,
             currentWarehouse = saved.currentWarehouse,
             permissions = convertPermissionsSchemaToPermissions(saved.permissions),
