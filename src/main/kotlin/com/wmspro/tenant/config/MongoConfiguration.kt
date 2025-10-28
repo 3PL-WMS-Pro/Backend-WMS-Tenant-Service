@@ -46,13 +46,24 @@ class MongoConfiguration(
     }
 
     /**
-     * Single lazy MongoTemplate bean - exactly like LTR-Backend
-     * Uses DatabaseConfiguration to handle dynamic database switching
+     * Tenant-aware MongoDatabaseFactory bean for Spring Data Repositories
+     * This is a singleton bean, but it internally reads the connection from ThreadLocal
+     * for each database operation, ensuring proper routing to central or tenant-specific databases.
      */
     @Bean
-    @Lazy
-    fun mongoTemplate(): MongoTemplate {
-        val connectionUri = MongoConnectionStorage.getConnection(central = true)
-        return MongoTemplate(DatabaseConfiguration(connectionUri, "wms_pro_tenants"))
+    fun mongoDatabaseFactory(): org.springframework.data.mongodb.MongoDatabaseFactory {
+        return TenantAwareMongoDatabaseFactory(
+            centralMongoUri,
+            "wms_pro_tenants"
+        )
+    }
+
+    /**
+     * MongoTemplate bean for manual MongoDB operations
+     * Uses the tenant-aware factory which handles connection routing per request
+     */
+    @Bean
+    fun mongoTemplate(mongoDatabaseFactory: org.springframework.data.mongodb.MongoDatabaseFactory): MongoTemplate {
+        return MongoTemplate(mongoDatabaseFactory)
     }
 }
