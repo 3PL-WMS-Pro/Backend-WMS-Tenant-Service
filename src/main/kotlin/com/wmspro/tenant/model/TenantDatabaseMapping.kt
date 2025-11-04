@@ -104,11 +104,10 @@ data class S3Configuration(
 
 /**
  * Tenant-specific settings (replaces TaskTemplate model)
+ * Note: emailConfigs and emailTemplates are now stored in separate collections
  */
 data class TenantSettings(
     val taskConfigurations: TaskConfigurations = TaskConfigurations(),
-    val emailConfigs: Map<String, EmailConfig> = emptyMap(), // Multiple named email configs
-    val emailTemplates: EmailTemplates = EmailTemplates(),
     val billingSettings: Map<String, Any> = emptyMap(),
     val inventorySettings: Map<String, Any> = emptyMap(),
     val orderProcessingSettings: Map<String, Any> = emptyMap(),
@@ -180,63 +179,9 @@ enum class AssignmentStrategy {
 }
 
 /**
- * Email configuration for tenant SMTP settings
+ * Note: EmailConfig and EmailTemplate models have been moved to separate collections
+ * See: EmailConfig.kt and EmailTemplate.kt
  */
-data class EmailConfig(
-    @field:NotBlank(message = "SMTP host cannot be blank")
-    val smtpHost: String,
-
-    @field:Min(1, message = "SMTP port must be positive")
-    @field:Max(65535, message = "SMTP port must be <= 65535")
-    val smtpPort: Int = 587,
-
-    @field:NotBlank(message = "Username cannot be blank")
-    @field:Email(message = "Username must be a valid email")
-    val username: String,
-
-    @field:NotBlank(message = "Password cannot be blank")
-    val password: String, // Should be encrypted in production
-
-    @field:NotBlank(message = "From email cannot be blank")
-    @field:Email(message = "From email must be valid")
-    val fromEmail: String,
-
-    val fromName: String? = null,
-
-    val useTLS: Boolean = true,
-    val useSSL: Boolean = false,
-    val authEnabled: Boolean = true
-) {
-    init {
-        require(smtpHost.isNotBlank()) { "SMTP host cannot be blank" }
-        require(smtpPort in 1..65535) { "SMTP port must be between 1 and 65535" }
-        require(username.isNotBlank()) { "Username cannot be blank" }
-        require(password.isNotBlank()) { "Password cannot be blank" }
-        require(fromEmail.isNotBlank()) { "From email cannot be blank" }
-    }
-}
-
-/**
- * Email templates for different document types
- */
-data class EmailTemplates(
-    val grnEmail: EmailTemplate? = null,
-    val ginEmail: EmailTemplate? = null,
-    val invoiceEmail: EmailTemplate? = null,
-    val packingListEmail: EmailTemplate? = null,
-    val deliveryNoteEmail: EmailTemplate? = null
-)
-
-/**
- * Individual email template configuration
- */
-data class EmailTemplate(
-    val subject: String,
-    val body: String, // HTML or plain text
-    val emailConfigKey: String = "default", // Reference to which email config to use (e.g., "warehouse", "billing")
-    val ccEmails: List<String> = emptyList(),
-    val bccEmails: List<String> = emptyList()
-)
 
 /**
  * Tenant status
