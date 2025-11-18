@@ -400,23 +400,60 @@ body {
     margin: 0;
 }
 
-/* Page break control for printing */
+/* Page break control for printing and PDF generation */
+@page {
+    size: A4 landscape;
+    margin: 15mm;
+}
+
 @media print {
     body {
         padding: 0;
     }
 
     .grn-document {
-        page-break-after: avoid;
+        page-break-inside: auto;
+        page-break-after: auto;
     }
 
+    /* Table pagination - allow breaking across pages */
     .items-table {
+        page-break-inside: auto;
+        page-break-after: auto;
+    }
+
+    /* Repeat table header on each page */
+    .items-table thead {
+        display: table-header-group;
+    }
+
+    /* Repeat table footer on each page */
+    .items-table tfoot {
+        display: table-footer-group;
+    }
+
+    /* Allow tbody to break across pages */
+    .items-table tbody {
+        display: table-row-group;
         page-break-inside: auto;
     }
 
+    /* Prevent individual rows from breaking */
     .items-table tr {
         page-break-inside: avoid;
         page-break-after: auto;
+    }
+
+    /* Keep header, info section, and footer together if possible */
+    .header,
+    .info-section {
+        page-break-inside: avoid;
+        page-break-after: auto;
+    }
+
+    .footer {
+        page-break-inside: avoid;
+        page-break-before: auto;
     }
 }
         """.trimIndent()
@@ -870,23 +907,61 @@ body {
     margin: 0;
 }
 
-/* Page break control for printing */
+/* Page break control for printing and PDF generation */
+@page {
+    size: A4 portrait;
+    margin: 15mm;
+}
+
 @media print {
     body {
         padding: 0;
     }
 
     .gin-document {
-        page-break-after: avoid;
+        page-break-inside: auto;
+        page-break-after: auto;
     }
 
+    /* Table pagination - allow breaking across pages */
     .items-table {
+        page-break-inside: auto;
+        page-break-after: auto;
+    }
+
+    /* Repeat table header on each page */
+    .items-table thead {
+        display: table-header-group;
+    }
+
+    /* Repeat table footer on each page */
+    .items-table tfoot {
+        display: table-footer-group;
+    }
+
+    /* Allow tbody to break across pages */
+    .items-table tbody {
+        display: table-row-group;
         page-break-inside: auto;
     }
 
+    /* Prevent individual rows from breaking */
     .items-table tr {
         page-break-inside: avoid;
         page-break-after: auto;
+    }
+
+    /* Keep header, info section, address section, and footer together if possible */
+    .header,
+    .info-section,
+    .address-section {
+        page-break-inside: avoid;
+        page-break-after: auto;
+    }
+
+    .footer {
+        page-break-inside: avoid;
+        page-break-before: auto;
     }
 }
         """.trimIndent()
