@@ -458,4 +458,68 @@ class TenantSettingsController(
             ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error(message = "Failed to set email template"))
         }
     }
+
+    // ==================== S3 Configuration Endpoints ====================
+
+    /**
+     * Get S3 Configuration
+     */
+    @GetMapping("/tenant-settings/s3-config")
+    @Operation(
+        summary = "Get S3 Configuration",
+        description = "Retrieves S3 bucket configuration for the tenant. Credentials are masked for security."
+    )
+    fun getS3Configuration(): ResponseEntity<ApiResponse<S3ConfigurationResponse>> {
+        val tenantId = TenantContext.getCurrentTenant()
+        logger.debug("Fetching S3 configuration for tenant: $tenantId")
+
+        return try {
+            if (tenantId == null) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body(
+                    ApiResponse.error(message = "Tenant context missing or invalid")
+                )
+            }
+
+            val response = tenantSettingsService.getS3Configuration(tenantId.toInt())
+            ResponseEntity.ok(ApiResponse.success(data = response, message = "S3 configuration retrieved successfully"))
+        } catch (e: NotFoundException) {
+            ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(message = e.message ?: "Tenant not found"))
+        } catch (e: Exception) {
+            logger.error("Error fetching S3 configuration", e)
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error(message = "Failed to retrieve S3 configuration"))
+        }
+    }
+
+    /**
+     * Set S3 Configuration
+     */
+    @PutMapping("/tenant-settings/s3-config")
+    @Operation(
+        summary = "Set S3 Configuration",
+        description = "Sets (overwrites) S3 bucket configuration for the tenant"
+    )
+    fun setS3Configuration(
+        @Valid @RequestBody request: SetS3ConfigurationRequest
+    ): ResponseEntity<ApiResponse<S3ConfigurationResponse>> {
+        val tenantId = TenantContext.getCurrentTenant()
+        logger.info("Setting S3 configuration for tenant: $tenantId")
+
+        return try {
+            if (tenantId == null) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body(
+                    ApiResponse.error(message = "Tenant context missing or invalid")
+                )
+            }
+
+            val response = tenantSettingsService.setS3Configuration(tenantId.toInt(), request)
+            ResponseEntity.ok(ApiResponse.success(data = response, message = "S3 configuration updated successfully"))
+        } catch (e: NotFoundException) {
+            ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(message = e.message ?: "Tenant not found"))
+        } catch (e: IllegalArgumentException) {
+            ResponseEntity.badRequest().body(ApiResponse.error(message = e.message ?: "Invalid request"))
+        } catch (e: Exception) {
+            logger.error("Error setting S3 configuration", e)
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error(message = "Failed to update S3 configuration"))
+        }
+    }
 }

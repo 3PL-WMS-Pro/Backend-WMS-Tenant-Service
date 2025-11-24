@@ -446,5 +446,78 @@ class TenantSettingsService(
             EmailTemplateType.DELIVERY_NOTE -> templates.deliveryNoteEmail
         }
     }
+
+    // ==================== S3 Configuration Methods ====================
+
+    /**
+     * Gets S3 configuration for the tenant (masks sensitive credentials)
+     */
+    fun getS3Configuration(clientId: Int): S3ConfigurationResponse {
+        logger.debug("Fetching S3 configuration for client ID: $clientId")
+
+        val tenant = tenantRepository.findByClientId(clientId).orElse(null)
+            ?: throw NotFoundException("Tenant not found with client ID: $clientId")
+
+        val s3Config = tenant.s3Configuration
+
+        return S3ConfigurationResponse(
+            bucketName = s3Config.bucketName,
+            region = s3Config.region,
+            accessKeyMasked = maskCredential(s3Config.accessKey),
+            secretKeyMasked = maskCredential(s3Config.secretKey),
+            bucketPrefix = s3Config.bucketPrefix,
+            isConfigured = s3Config.bucketName.isNotBlank() && s3Config.accessKey.isNotBlank(),
+            lastModified = tenant.updatedAt
+        )
+    }
+
+    /**
+     * Sets (overwrites) S3 configuration for the tenant
+     */
+    @Transactional
+    @CacheEvict(value = ["tenantMappings"], key = "#clientId")
+    fun setS3Configuration(clientId: Int, request: SetS3ConfigurationRequest): S3ConfigurationResponse {
+        logger.info("Setting S3 configuration for client ID: $clientId")
+
+        val tenant = tenantRepository.findByClientId(clientId).orElse(null)
+            ?: throw NotFoundException("Tenant not found with client ID: $clientId")
+
+        val newS3Config = S3Configuration(
+            bucketName = request.bucketName,
+            region = request.region,
+            accessKey = request.accessKey,
+            secretKey = request.secretKey,
+            bucketPrefix = request.bucketPrefix
+        )
+
+        val updatedTenant = tenant.copy(
+            s3Configuration = newS3Config,
+            updatedAt = LocalDateTime.now()
+        )
+
+        tenantRepository.save(updatedTenant)
+        logger.info("Successfully updated S3 configuration for client ID: $clientId")
+
+        return S3ConfigurationResponse(
+            bucketName = newS3Config.bucketName,
+            region = newS3Config.region,
+            accessKeyMasked = maskCredential(newS3Config.accessKey),
+            secretKeyMasked = maskCredential(newS3Config.secretKey),
+            bucketPrefix = newS3Config.bucketPrefix,
+            isConfigured = true,
+            lastModified = LocalDateTime.now()
+        )
+    }
+
+    /**
+     * Masks a credential showing only the last 4 characters
+     */
+    private fun maskCredential(credential: String): String {
+        return if (credential.length > 4) {
+            "****" + credential.takeLast(4)
+        } else {
+            "****"
+        }
+    }
 }
 

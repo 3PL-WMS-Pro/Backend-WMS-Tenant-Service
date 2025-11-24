@@ -205,3 +205,37 @@ data class SetEmailTemplateRequest(
         bccEmails = bccEmails
     )
 }
+
+// ==================== S3 Configuration DTOs ====================
+
+/**
+ * Response for S3 configuration (masks sensitive credentials)
+ */
+data class S3ConfigurationResponse(
+    val bucketName: String,
+    val region: String,
+    val accessKeyMasked: String, // Shows only last 4 characters
+    val secretKeyMasked: String, // Shows only last 4 characters
+    val bucketPrefix: String?,
+    val isConfigured: Boolean,
+    val lastModified: java.time.LocalDateTime?
+)
+
+/**
+ * Request for setting S3 configuration
+ */
+data class SetS3ConfigurationRequest(
+    @field:NotBlank(message = "Bucket name cannot be blank")
+    val bucketName: String,
+
+    @field:NotBlank(message = "Region cannot be blank")
+    val region: String = "ap-south-1",
+
+    @field:NotBlank(message = "Access key cannot be blank")
+    val accessKey: String,
+
+    @field:NotBlank(message = "Secret key cannot be blank")
+    val secretKey: String,
+
+    val bucketPrefix: String? = null
+)
