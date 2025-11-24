@@ -55,6 +55,17 @@ class TenantInterceptor(
         if (CENTRAL_DB_PATHS.any { requestUrl.startsWith(it) }) {
             logger.debug("Using central database for path: $requestUrl")
             MongoConnectionStorage.setConnection(MongoConnectionStorage.DEFAULT_DB_URL_CENTRAL)
+
+            // Still extract tenant context for paths that need it (e.g., tenant-settings)
+            val tenantHeader = request.getHeader(GlobalConstants.TENANT_HEADER)
+                ?: request.getHeader(GlobalConstants.CLIENT_HEADER)
+                ?: request.getParameter(GlobalConstants.TENANT_QUERY_PARAM)
+
+            if (!tenantHeader.isNullOrBlank()) {
+                TenantContext.setCurrentTenant(tenantHeader)
+                logger.debug("Set tenant context: $tenantHeader for central DB path")
+            }
+
             return true
         }
 
