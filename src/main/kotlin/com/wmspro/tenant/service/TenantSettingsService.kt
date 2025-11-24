@@ -2,7 +2,7 @@ package com.wmspro.tenant.service
 
 import com.wmspro.tenant.dto.*
 import com.wmspro.tenant.exception.NotFoundException
-import com.wmspro.tenant.model.TenantSettings
+import com.wmspro.tenant.model.*
 import com.wmspro.tenant.repository.TenantDatabaseMappingRepository
 import org.slf4j.LoggerFactory
 import org.springframework.cache.annotation.CacheEvict
@@ -73,7 +73,7 @@ class TenantSettingsService(
     }
 
     /**
-     * Validates SLA settings are reasonable
+     * Counts non-empty settings categories
      */
     private fun countNonEmptySettings(settings: TenantSettings): Int {
         var count = 0
@@ -86,6 +86,12 @@ class TenantSettingsService(
         if (!settings.taskConfigurations.packMove.isEmpty()) count++
         if (!settings.taskConfigurations.pickPackMove.isEmpty()) count++
         if (!settings.taskConfigurations.loading.isEmpty()) count++
+        if (settings.emailConfigs.isNotEmpty()) count++
+        if (settings.emailTemplates.grnEmail != null ||
+            settings.emailTemplates.ginEmail != null ||
+            settings.emailTemplates.invoiceEmail != null ||
+            settings.emailTemplates.packingListEmail != null ||
+            settings.emailTemplates.deliveryNoteEmail != null) count++
         if (!settings.billingSettings.isEmpty()) count++
         if (!settings.inventorySettings.isEmpty()) count++
         if (!settings.orderProcessingSettings.isEmpty()) count++
@@ -108,6 +114,14 @@ class TenantSettingsService(
             !settings.taskConfigurations.pickPackMove.isEmpty() ||
             !settings.taskConfigurations.loading.isEmpty()) {
             categories.add("taskConfigurations")
+        }
+        if (settings.emailConfigs.isNotEmpty()) categories.add("emailConfigs")
+        if (settings.emailTemplates.grnEmail != null ||
+            settings.emailTemplates.ginEmail != null ||
+            settings.emailTemplates.invoiceEmail != null ||
+            settings.emailTemplates.packingListEmail != null ||
+            settings.emailTemplates.deliveryNoteEmail != null) {
+            categories.add("emailTemplates")
         }
         if (!settings.billingSettings.isEmpty()) categories.add("billingSettings")
         if (!settings.inventorySettings.isEmpty()) categories.add("inventorySettings")
@@ -155,6 +169,8 @@ class TenantSettingsService(
     ): TenantSettings {
         return TenantSettings(
             taskConfigurations = updates.taskConfigurations ?: existing.taskConfigurations,
+            emailConfigs = if (updates.emailConfigs.isNotEmpty()) updates.emailConfigs else existing.emailConfigs,
+            emailTemplates = updates.emailTemplates ?: existing.emailTemplates,
             billingSettings = updates.billingSettings ?: existing.billingSettings,
             inventorySettings = updates.inventorySettings ?: existing.inventorySettings,
             orderProcessingSettings = updates.orderProcessingSettings ?: existing.orderProcessingSettings,
@@ -163,6 +179,272 @@ class TenantSettingsService(
             securitySettings = updates.securitySettings ?: existing.securitySettings,
             notificationPreferences = updates.notificationPreferences ?: existing.notificationPreferences
         )
+    }
+
+    // ==================== SLA Settings Methods ====================
+
+    /**
+     * Gets SLA settings for the tenant
+     */
+    fun getSlaSettings(clientId: Int): SlaSettingsResponse {
+        logger.debug("Fetching SLA settings for client ID: $clientId")
+
+        val tenant = tenantRepository.findByClientId(clientId).orElse(null)
+            ?: throw NotFoundException("Tenant not found with client ID: $clientId")
+
+        return SlaSettingsResponse(
+            slaSettings = tenant.tenantSettings.taskConfigurations.slaSettings,
+            lastModified = tenant.updatedAt
+        )
+    }
+
+    /**
+     * Updates SLA settings for the tenant (partial update)
+     */
+    @Transactional
+    @CacheEvict(value = ["tenantMappings"], key = "#clientId")
+    fun updateSlaSettings(clientId: Int, request: UpdateSlaSettingsRequest): SlaSettings {
+        logger.info("Updating SLA settings for client ID: $clientId")
+
+        val tenant = tenantRepository.findByClientId(clientId).orElse(null)
+            ?: throw NotFoundException("Tenant not found with client ID: $clientId")
+
+        val existingSla = tenant.tenantSettings.taskConfigurations.slaSettings
+
+        // Merge with existing settings (only update non-null fields)
+        val updatedSla = SlaSettings(
+            countingSlaMinutes = request.countingSlaMinutes ?: existingSla.countingSlaMinutes,
+            transferSlaMinutes = request.transferSlaMinutes ?: existingSla.transferSlaMinutes,
+            offloadingSlaMinutes = request.offloadingSlaMinutes ?: existingSla.offloadingSlaMinutes,
+            receivingSlaMinutes = request.receivingSlaMinutes ?: existingSla.receivingSlaMinutes,
+            putawaySlaMinutes = request.putawaySlaMinutes ?: existingSla.putawaySlaMinutes,
+            pickingSlaMinutes = request.pickingSlaMinutes ?: existingSla.pickingSlaMinutes,
+            packMoveSlaMinutes = request.packMoveSlaMinutes ?: existingSla.packMoveSlaMinutes,
+            pickPackMoveSlaMinutes = request.pickPackMoveSlaMinutes ?: existingSla.pickPackMoveSlaMinutes,
+            loadingSlaMinutes = request.loadingSlaMinutes ?: existingSla.loadingSlaMinutes,
+            escalationAfterMinutes = request.escalationAfterMinutes ?: existingSla.escalationAfterMinutes
+        )
+
+        val updatedTaskConfigs = tenant.tenantSettings.taskConfigurations.copy(slaSettings = updatedSla)
+        val updatedSettings = tenant.tenantSettings.copy(taskConfigurations = updatedTaskConfigs)
+        val updatedTenant = tenant.copy(tenantSettings = updatedSettings, updatedAt = LocalDateTime.now())
+
+        tenantRepository.save(updatedTenant)
+        logger.info("Successfully updated SLA settings for client ID: $clientId")
+
+        return updatedSla
+    }
+
+    // ==================== Email Config Methods ====================
+
+    /**
+     * Gets all email configs for the tenant
+     */
+    fun getEmailConfigs(clientId: Int): EmailConfigListResponse {
+        logger.debug("Fetching email configs for client ID: $clientId")
+
+        val tenant = tenantRepository.findByClientId(clientId).orElse(null)
+            ?: throw NotFoundException("Tenant not found with client ID: $clientId")
+
+        return EmailConfigListResponse(
+            configs = tenant.tenantSettings.emailConfigs,
+            count = tenant.tenantSettings.emailConfigs.size,
+            lastModified = tenant.updatedAt
+        )
+    }
+
+    /**
+     * Gets a specific email config by key
+     */
+    fun getEmailConfigByKey(clientId: Int, configKey: String): EmailConfigResponse {
+        logger.debug("Fetching email config '$configKey' for client ID: $clientId")
+
+        val tenant = tenantRepository.findByClientId(clientId).orElse(null)
+            ?: throw NotFoundException("Tenant not found with client ID: $clientId")
+
+        val config = tenant.tenantSettings.emailConfigs[configKey]
+            ?: throw NotFoundException("Email config not found with key: $configKey")
+
+        return EmailConfigResponse(
+            configKey = configKey,
+            config = config,
+            lastModified = tenant.updatedAt
+        )
+    }
+
+    /**
+     * Adds a new email config
+     */
+    @Transactional
+    @CacheEvict(value = ["tenantMappings"], key = "#clientId")
+    fun addEmailConfig(clientId: Int, request: EmailConfigRequest): EmailConfig {
+        logger.info("Adding email config '${request.configKey}' for client ID: $clientId")
+
+        val tenant = tenantRepository.findByClientId(clientId).orElse(null)
+            ?: throw NotFoundException("Tenant not found with client ID: $clientId")
+
+        // Check if config key already exists
+        if (tenant.tenantSettings.emailConfigs.containsKey(request.configKey)) {
+            throw IllegalArgumentException("Email config with key '${request.configKey}' already exists. Use update endpoint instead.")
+        }
+
+        val newConfig = request.toEmailConfig()
+        val updatedConfigs = tenant.tenantSettings.emailConfigs + (request.configKey to newConfig)
+        val updatedSettings = tenant.tenantSettings.copy(emailConfigs = updatedConfigs)
+        val updatedTenant = tenant.copy(tenantSettings = updatedSettings, updatedAt = LocalDateTime.now())
+
+        tenantRepository.save(updatedTenant)
+        logger.info("Successfully added email config '${request.configKey}' for client ID: $clientId")
+
+        return newConfig
+    }
+
+    /**
+     * Updates an existing email config
+     */
+    @Transactional
+    @CacheEvict(value = ["tenantMappings"], key = "#clientId")
+    fun updateEmailConfig(clientId: Int, configKey: String, request: EmailConfigRequest): EmailConfig {
+        logger.info("Updating email config '$configKey' for client ID: $clientId")
+
+        val tenant = tenantRepository.findByClientId(clientId).orElse(null)
+            ?: throw NotFoundException("Tenant not found with client ID: $clientId")
+
+        // Check if config key exists
+        if (!tenant.tenantSettings.emailConfigs.containsKey(configKey)) {
+            throw NotFoundException("Email config not found with key: $configKey")
+        }
+
+        val updatedConfig = request.toEmailConfig()
+        val updatedConfigs = tenant.tenantSettings.emailConfigs + (configKey to updatedConfig)
+        val updatedSettings = tenant.tenantSettings.copy(emailConfigs = updatedConfigs)
+        val updatedTenant = tenant.copy(tenantSettings = updatedSettings, updatedAt = LocalDateTime.now())
+
+        tenantRepository.save(updatedTenant)
+        logger.info("Successfully updated email config '$configKey' for client ID: $clientId")
+
+        return updatedConfig
+    }
+
+    /**
+     * Deletes an email config
+     */
+    @Transactional
+    @CacheEvict(value = ["tenantMappings"], key = "#clientId")
+    fun deleteEmailConfig(clientId: Int, configKey: String) {
+        logger.info("Deleting email config '$configKey' for client ID: $clientId")
+
+        val tenant = tenantRepository.findByClientId(clientId).orElse(null)
+            ?: throw NotFoundException("Tenant not found with client ID: $clientId")
+
+        // Check if config key exists
+        if (!tenant.tenantSettings.emailConfigs.containsKey(configKey)) {
+            throw NotFoundException("Email config not found with key: $configKey")
+        }
+
+        val updatedConfigs = tenant.tenantSettings.emailConfigs - configKey
+        val updatedSettings = tenant.tenantSettings.copy(emailConfigs = updatedConfigs)
+        val updatedTenant = tenant.copy(tenantSettings = updatedSettings, updatedAt = LocalDateTime.now())
+
+        tenantRepository.save(updatedTenant)
+        logger.info("Successfully deleted email config '$configKey' for client ID: $clientId")
+    }
+
+    // ==================== Email Template Methods ====================
+
+    /**
+     * Gets all email templates
+     */
+    fun getEmailTemplates(clientId: Int): EmailTemplatesResponse {
+        logger.debug("Fetching email templates for client ID: $clientId")
+
+        val tenant = tenantRepository.findByClientId(clientId).orElse(null)
+            ?: throw NotFoundException("Tenant not found with client ID: $clientId")
+
+        val templates = tenant.tenantSettings.emailTemplates
+        val templateMap = mapOf(
+            EmailTemplateType.GRN to templates.grnEmail,
+            EmailTemplateType.GIN to templates.ginEmail,
+            EmailTemplateType.INVOICE to templates.invoiceEmail,
+            EmailTemplateType.PACKING_LIST to templates.packingListEmail,
+            EmailTemplateType.DELIVERY_NOTE to templates.deliveryNoteEmail
+        )
+
+        val configuredCount = templateMap.values.count { it != null }
+
+        return EmailTemplatesResponse(
+            templates = templateMap,
+            configuredCount = configuredCount,
+            lastModified = tenant.updatedAt
+        )
+    }
+
+    /**
+     * Gets a specific email template by type
+     */
+    fun getEmailTemplateByType(clientId: Int, templateType: EmailTemplateType): EmailTemplateResponse {
+        logger.debug("Fetching email template '$templateType' for client ID: $clientId")
+
+        val tenant = tenantRepository.findByClientId(clientId).orElse(null)
+            ?: throw NotFoundException("Tenant not found with client ID: $clientId")
+
+        val template = getTemplateByType(tenant.tenantSettings.emailTemplates, templateType)
+
+        return EmailTemplateResponse(
+            templateType = templateType,
+            template = template,
+            isConfigured = template != null,
+            lastModified = tenant.updatedAt
+        )
+    }
+
+    /**
+     * Sets (creates or updates) an email template for a specific type
+     */
+    @Transactional
+    @CacheEvict(value = ["tenantMappings"], key = "#clientId")
+    fun setEmailTemplate(clientId: Int, templateType: EmailTemplateType, request: SetEmailTemplateRequest): EmailTemplate {
+        logger.info("Setting email template '$templateType' for client ID: $clientId")
+
+        val tenant = tenantRepository.findByClientId(clientId).orElse(null)
+            ?: throw NotFoundException("Tenant not found with client ID: $clientId")
+
+        // Validate that the referenced email config exists (if not "default")
+        if (request.emailConfigKey != "default" && !tenant.tenantSettings.emailConfigs.containsKey(request.emailConfigKey)) {
+            throw IllegalArgumentException("Email config '${request.emailConfigKey}' does not exist. Create it first or use 'default'.")
+        }
+
+        val newTemplate = request.toEmailTemplate()
+        val existingTemplates = tenant.tenantSettings.emailTemplates
+
+        val updatedTemplates = when (templateType) {
+            EmailTemplateType.GRN -> existingTemplates.copy(grnEmail = newTemplate)
+            EmailTemplateType.GIN -> existingTemplates.copy(ginEmail = newTemplate)
+            EmailTemplateType.INVOICE -> existingTemplates.copy(invoiceEmail = newTemplate)
+            EmailTemplateType.PACKING_LIST -> existingTemplates.copy(packingListEmail = newTemplate)
+            EmailTemplateType.DELIVERY_NOTE -> existingTemplates.copy(deliveryNoteEmail = newTemplate)
+        }
+
+        val updatedSettings = tenant.tenantSettings.copy(emailTemplates = updatedTemplates)
+        val updatedTenant = tenant.copy(tenantSettings = updatedSettings, updatedAt = LocalDateTime.now())
+
+        tenantRepository.save(updatedTenant)
+        logger.info("Successfully set email template '$templateType' for client ID: $clientId")
+
+        return newTemplate
+    }
+
+    /**
+     * Helper to get template by type
+     */
+    private fun getTemplateByType(templates: EmailTemplates, type: EmailTemplateType): EmailTemplate? {
+        return when (type) {
+            EmailTemplateType.GRN -> templates.grnEmail
+            EmailTemplateType.GIN -> templates.ginEmail
+            EmailTemplateType.INVOICE -> templates.invoiceEmail
+            EmailTemplateType.PACKING_LIST -> templates.packingListEmail
+            EmailTemplateType.DELIVERY_NOTE -> templates.deliveryNoteEmail
+        }
     }
 }
 

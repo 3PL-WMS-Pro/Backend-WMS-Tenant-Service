@@ -147,6 +147,8 @@ class InternalTenantService(
     private fun getSettingsField(settings: TenantSettings, fieldName: String): Any? {
         return when (fieldName) {
             "taskConfigurations", "task_configurations" -> settings.taskConfigurations
+            "emailConfigs", "email_configs" -> settings.emailConfigs
+            "emailTemplates", "email_templates" -> settings.emailTemplates
             "billingSettings", "billing_settings" -> settings.billingSettings
             "inventorySettings", "inventory_settings" -> settings.inventorySettings
             "orderProcessingSettings", "order_processing_settings" -> settings.orderProcessingSettings
