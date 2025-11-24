@@ -13,13 +13,10 @@ import org.springframework.data.mongodb.config.EnableMongoAuditing
 import org.springframework.data.mongodb.repository.config.EnableMongoRepositories
 import org.springframework.scheduling.annotation.EnableAsync
 import org.springframework.scheduling.annotation.EnableScheduling
-import org.springframework.web.servlet.config.annotation.CorsRegistry
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
 import com.wmspro.tenant.interceptor.TenantInterceptor
-import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
-import org.springframework.beans.factory.annotation.Value
 
 /**
  * Main application class for WMS Tenant Service
@@ -79,12 +76,7 @@ fun main(args: Array<String>) {
  */
 @Configuration
 class WebMvcConfig(
-    private val tenantInterceptor: TenantInterceptor,  // Complete interceptor for tenant handling
-    @Value("\${app.cors.allowed-origins}") private val allowedOrigins: List<String>,
-    @Value("\${app.cors.allowed-methods}") private val allowedMethods: String,
-    @Value("\${app.cors.allowed-headers}") private val allowedHeaders: String,
-    @Value("\${app.cors.allow-credentials}") private val allowCredentials: Boolean,
-    @Value("\${app.cors.max-age}") private val maxAge: Long
+    private val tenantInterceptor: TenantInterceptor  // Complete interceptor for tenant handling
 ) : WebMvcConfigurer {
 
     private val logger = LoggerFactory.getLogger(WebMvcConfig::class.java)
@@ -102,13 +94,5 @@ class WebMvcConfig(
             )
     }
 
-    override fun addCorsMappings(registry: CorsRegistry) {
-        logger.info("Configuring CORS with allowed origins: $allowedOrigins")
-        registry.addMapping("/**")
-            .allowedOriginPatterns(*allowedOrigins.toTypedArray())
-            .allowedMethods(*allowedMethods.split(",").toTypedArray())
-            .allowedHeaders(allowedHeaders)
-            .allowCredentials(allowCredentials)
-            .maxAge(maxAge)
-    }
+    // CORS is handled by API Gateway - do not add here to avoid duplicate headers
 }
