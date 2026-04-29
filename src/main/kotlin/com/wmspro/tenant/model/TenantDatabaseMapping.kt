@@ -31,6 +31,13 @@ data class TenantDatabaseMapping(
 
     val tenantSettings: TenantSettings = TenantSettings(),
 
+    /**
+     * FreighAi tenant identifier (e.g. "tenant_c9d375a64417"). Populated post-migration
+     * to translate FreighAi auth response → WMS Long clientId at login. Null for tenants
+     * that don't yet have a FreighAi mapping.
+     */
+    val freighaiTenantId: String? = null,
+
     val lastConnected: LocalDateTime? = null,
 
     @CreatedDate

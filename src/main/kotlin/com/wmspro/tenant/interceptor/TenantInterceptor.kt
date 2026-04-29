@@ -29,6 +29,8 @@ class TenantInterceptor(
             "/api/v1/tenants",  // All tenant management operations use central DB (includes internal)
             "/api/v1/tenant-settings", // Tenant settings also use central DB
             "/api/v1/document-templates", // Document templates stored centrally (global shared templates)
+            "/users/login",     // Login proxy: user has no tenant context yet; tenant is resolved via FreighAi response
+            "/clients/get",     // /clients/get/by-id/{id} reads tenant_database_mappings (central DB)
             "/actuator",
             "/health",
             "/info",

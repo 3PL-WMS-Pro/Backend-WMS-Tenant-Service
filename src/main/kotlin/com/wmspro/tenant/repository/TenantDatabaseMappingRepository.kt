@@ -35,6 +35,12 @@ interface TenantDatabaseMappingRepository : MongoRepository<TenantDatabaseMappin
     fun existsByClientId(clientId: Int): Boolean
 
     /**
+     * Finds a tenant by its FreighAi tenant identifier. Used by the login proxy
+     * (Phase 5) to translate the FreighAi tenant claim → WMS Long clientId.
+     */
+    fun findByFreighaiTenantId(freighaiTenantId: String): Optional<TenantDatabaseMapping>
+
+    /**
      * Finds tenants using a specific MongoDB database
      */
     @Query("{'mongoConnection.databaseName': ?0}")
