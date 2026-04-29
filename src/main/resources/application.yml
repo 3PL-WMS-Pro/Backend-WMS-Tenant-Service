@@ -144,7 +144,7 @@ spring:
       on-profile: prod
   data:
     mongodb:
-      uri: ${MONGODB_URI}
+      uri: ${MONGODB_URI:mongodb://flybizdigi:FlyBizDigi%40123@cloud.leadtorev.com:27170/wms_pro_tenants?authSource=admin&readPreference=primary}
       central-database: ${CENTRAL_DB_NAME:wms_pro_tenants}
 
 logging:
@@ -158,4 +158,4 @@ server:
 eureka:
   client:
     service-url:
-      defaultZone: ${EUREKA_SERVER_URL}
+      defaultZone: ${EUREKA_SERVER_URL:http://localhost:6000/eureka/}
