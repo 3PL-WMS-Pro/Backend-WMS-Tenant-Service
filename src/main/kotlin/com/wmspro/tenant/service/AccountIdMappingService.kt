@@ -106,16 +106,12 @@ class AccountIdMappingService(
         if (toMint.isEmpty()) return existingByFreighaiId
 
         logger.info("Minting {} synthetic account ID(s) for new FreighAI customers", toMint.size)
+        val minted = mutableMapOf<String, Long>()
         toMint.values.forEach { item ->
-            mintOne(item.freighaiCustomerId, item.accountCode)
+            minted[item.freighaiCustomerId] = mintOne(item.freighaiCustomerId, item.accountCode)
         }
 
-        // Re-query Mongo to get canonical IDs for ALL requested freighai IDs.
-        // We don't trust mintOne's in-memory return value (a previous bug had it
-        // returning result.value from findAndModify-returnNew off-by-one against
-        // the saved mapping's actual _id). Reading from Mongo after persist is
-        // the source of truth.
-        return batchGetByFreighaiIds(freighaiIds)
+        return existingByFreighaiId + minted
     }
 
     /**

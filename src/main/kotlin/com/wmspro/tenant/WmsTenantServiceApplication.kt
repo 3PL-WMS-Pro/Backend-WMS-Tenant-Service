@@ -84,9 +84,14 @@ class WebMvcConfig(
     override fun addInterceptors(registry: InterceptorRegistry) {
         logger.info("Registering tenant interceptor for multi-tenant support")
 
-        // Single interceptor handles both tenant extraction and MongoDB connection
+        // Single interceptor handles both tenant extraction and MongoDB connection.
+        // /clients/** and /users/** are the Phase 5 proxy endpoints (FreighAi-backed
+        // login + customer master). Without them in the pattern list the interceptor
+        // never fires for those requests and TenantAwareMongoDatabaseFactory silently
+        // falls back to the central DB — which silently corrupts the per-tenant
+        // account_id_mapping data with stray writes against wms_pro_tenants.
         registry.addInterceptor(tenantInterceptor)
-            .addPathPatterns("/api/**")
+            .addPathPatterns("/api/**", "/clients/**", "/users/**")
             .excludePathPatterns(
                 "/actuator/**",
                 "/swagger-ui/**",
