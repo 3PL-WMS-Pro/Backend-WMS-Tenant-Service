@@ -274,6 +274,11 @@ class CustomerMasterProxyService(
         return mapOf(
             "name" to name,
             "type" to type,
+            // FreighAi's CreateCustomerRequest has `tier: CustomerTier = CustomerTier.BRONZE`
+            // (non-null Kotlin default). Jackson does NOT honor the Kotlin default when the
+            // field is omitted from JSON — it tries to inject null and fails. Send tier
+            // explicitly. Same for any other non-null defaulted field added later.
+            "tier" to (body["tier"] as? String ?: "BRONZE"),
             "currency" to (body["currency"] as? String ?: "AED"),
             "accountOwnerId" to (body["accountOwnerId"] as? String ?: "system"),
             "contacts" to freighaiContacts,
