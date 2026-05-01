@@ -229,38 +229,123 @@ class CustomerMasterProxyService(
         "lastEngaged" to item.updatedAt
     )
 
-    /** Best-effort translation: leadtorev create-account body → FreighAi CreateCustomerRequest. */
+    /**
+     * Translate the leadtorev-shaped create-account body that the WMS frontend sends
+     * (`CreateCustomerDrawer.handleSubmit`) into FreighAi's `CreateCustomerRequest`.
+     *
+     * Frontend payload shape (top-level keys):
+     *   - account: { name, type }
+     *   - legalInfo: { legalName, cinNumber } | null
+     *   - contacts: [{ name, contactNo, email, title, designation, ... }]
+     *   - addresses: [{ title, buildingName, city, state, nation, pinCode, gstNumber, ... }]
+     *   - variableValues: {}
+     *
+     * FreighAi mapping:
+     *   - account.name      → name (required)
+     *   - account.type      → type (DIRECT_CUSTOMER | FREIGHT_FORWARDER)
+     *   - contacts[]        → contacts[] (name, emails:[email], phones:[contactNo],
+     *                                     role:designation, isPrimary on the first only)
+     *   - legalInfo.cinNumber → taxId (closest analogue; legalName has no FreighAi
+     *                                  field — it's normally identical to name)
+     *   - addresses, variableValues → currently dropped (FreighAi stores addresses in
+     *                                  a separate collection; round-tripping them is a
+     *                                  follow-up — see MIGRATION.md Phase 10 open items)
+     *
+     * Hardcodes: currency=AED, accountOwnerId=system. Both can be overridden by
+     * top-level body keys if a future caller passes them.
+     */
     private fun mapCreateBody(body: Map<String, Any?>): Map<String, Any?> {
-        val name = body["name"] as? String ?: body["accountName"] as? String ?: ""
-        val type = (body["type"] as? String) ?: "DIRECT_CUSTOMER"
-        val contactName = body["contactName"] as? String ?: body["primaryContactName"] as? String ?: name
-        val contactEmail = body["contactEmail"] as? String ?: body["emailId"] as? String
-        val contactPhone = body["contactNumber"] as? String ?: body["contactNo"] as? String
+        @Suppress("UNCHECKED_CAST")
+        val account = body["account"] as? Map<String, Any?> ?: emptyMap()
+        val name = (account["name"] as? String)
+            ?: (body["name"] as? String)
+            ?: (body["accountName"] as? String)
+            ?: ""
+        val type = (account["type"] as? String)
+            ?: (body["type"] as? String)
+            ?: "DIRECT_CUSTOMER"
 
-        val accountOwnerId = body["accountOwnerId"] as? String ?: "system"
+        val freighaiContacts = translateContacts(body["contacts"], fallbackName = name)
+
+        @Suppress("UNCHECKED_CAST")
+        val legalInfo = body["legalInfo"] as? Map<String, Any?>
+        val taxId = legalInfo?.get("cinNumber") as? String
 
         return mapOf(
             "name" to name,
             "type" to type,
             "currency" to (body["currency"] as? String ?: "AED"),
-            "accountOwnerId" to accountOwnerId,
-            "contacts" to listOf(
-                mapOf(
-                    "name" to contactName,
-                    "emails" to (if (contactEmail != null) listOf(contactEmail) else null),
-                    "phones" to (if (contactPhone != null) listOf(contactPhone) else null),
-                    "isPrimary" to true,
-                    "isActive" to true
-                )
-            )
+            "accountOwnerId" to (body["accountOwnerId"] as? String ?: "system"),
+            "contacts" to freighaiContacts,
+            "taxId" to taxId
         ).filterValues { it != null }
     }
 
-    /** Best-effort translation: leadtorev update-account body → FreighAi UpdateCustomerRequest. */
+    /**
+     * Translate the leadtorev-shaped update-account body into FreighAi's
+     * `UpdateCustomerRequest`. Same nested shape as create — `account.name` /
+     * `account.type` / `contacts[]` / `legalInfo.cinNumber` need extracting; flat
+     * top-level optional fields are passed through.
+     *
+     * FreighAi treats a `contacts` array on update as a full replacement (see
+     * UpdateCustomerRequest doc: "If provided, replaces all contacts"). We omit
+     * contacts unless the frontend explicitly sent some.
+     */
     private fun mapUpdateBody(body: Map<String, Any?>): Map<String, Any?> {
-        // Only forward fields FreighAi's UpdateCustomerRequest accepts, all optional.
-        val passThrough = listOf("name", "type", "tier", "industry", "website", "taxId", "notes", "isAtRisk")
-        return body.filter { (k, _) -> k in passThrough }
+        @Suppress("UNCHECKED_CAST")
+        val account = body["account"] as? Map<String, Any?>
+        val name = account?.get("name") as? String ?: body["name"] as? String
+        val type = account?.get("type") as? String ?: body["type"] as? String
+
+        val freighaiContacts = (body["contacts"] as? List<*>)
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { translateContacts(it, fallbackName = name ?: "") }
+
+        @Suppress("UNCHECKED_CAST")
+        val legalInfo = body["legalInfo"] as? Map<String, Any?>
+        val taxId = legalInfo?.get("cinNumber") as? String ?: body["taxId"] as? String
+
+        // Flat top-level fields that FreighAi accepts as-is (some leadtorev callers
+        // may still send these at the top level).
+        val passThrough = body.filterKeys { it in setOf("tier", "industry", "website", "notes", "isAtRisk") }
+
+        return (mapOf(
+            "name" to name,
+            "type" to type,
+            "contacts" to freighaiContacts,
+            "taxId" to taxId
+        ).filterValues { it != null } + passThrough)
+    }
+
+    /**
+     * Translate a leadtorev-shaped contacts array → FreighAi `ContactRequest` array.
+     * FreighAi requires at least one contact on create, so an empty input falls
+     * back to a single contact synthesized from `fallbackName`.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun translateContacts(rawContacts: Any?, fallbackName: String): List<Map<String, Any?>> {
+        val items = (rawContacts as? List<Map<String, Any?>>).orEmpty()
+        if (items.isEmpty()) {
+            return listOf(mapOf(
+                "name" to fallbackName,
+                "isPrimary" to true,
+                "isActive" to true
+            ))
+        }
+        return items.mapIndexed { index, c ->
+            val cName = (c["name"] as? String)?.takeIf { it.isNotBlank() } ?: fallbackName
+            val email = c["email"] as? String
+            val phone = (c["contactNo"] as? String) ?: (c["contactNumber"] as? String)
+            val role = c["designation"] as? String
+            mapOf(
+                "name" to cName,
+                "emails" to email?.takeIf { it.isNotBlank() }?.let { listOf(it) },
+                "phones" to phone?.takeIf { it.isNotBlank() }?.let { listOf(it) },
+                "role" to role,
+                "isPrimary" to (index == 0),
+                "isActive" to true
+            ).filterValues { it != null }
+        }
     }
 
     private fun postToFreighAi(path: String, body: Any, authToken: String): Map<String, Any?>? = try {
