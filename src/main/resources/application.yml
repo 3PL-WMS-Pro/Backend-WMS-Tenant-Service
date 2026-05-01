@@ -15,7 +15,7 @@ spring:
   # Cache Configuration
   cache:
     type: caffeine
-    cache-names: tenantMappings
+    cache-names: tenantMappings,freighaiChargeTypes
     caffeine:
       spec: maximumSize=100,expireAfterWrite=10m
 
