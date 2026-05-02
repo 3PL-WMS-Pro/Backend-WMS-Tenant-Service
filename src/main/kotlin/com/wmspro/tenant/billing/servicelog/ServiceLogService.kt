@@ -55,6 +55,8 @@ class ServiceLogService(
             customerId = request.customerId,
             serviceCode = request.serviceCode,
             quantity = request.quantity,
+            customRatePerUnit = request.customRatePerUnit,
+            customCostPerUnit = request.customCostPerUnit,
             performedAt = request.performedAt,
             attachedTo = AttachedRef(
                 type = request.attachedTo.type,
@@ -96,6 +98,8 @@ class ServiceLogService(
         val updated = existing.copy(
             serviceCode = request.serviceCode,
             quantity = request.quantity,
+            customRatePerUnit = request.customRatePerUnit,
+            customCostPerUnit = request.customCostPerUnit,
             performedAt = request.performedAt,
             notes = request.notes,
             updatedAt = Instant.now(),

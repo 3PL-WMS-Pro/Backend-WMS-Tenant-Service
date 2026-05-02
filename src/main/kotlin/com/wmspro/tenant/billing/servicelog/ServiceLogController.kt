@@ -135,6 +135,8 @@ class ServiceLogController(
         customerId = customerId,
         serviceCode = serviceCode,
         quantity = quantity,
+        customRatePerUnit = customRatePerUnit,
+        customCostPerUnit = customCostPerUnit,
         performedAt = performedAt,
         attachedTo = AttachedRefResponse(attachedTo.type, attachedTo.id, attachedTo.number),
         performedBy = performedBy,

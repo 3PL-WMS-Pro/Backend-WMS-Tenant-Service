@@ -27,6 +27,14 @@ data class CreateServiceLogRequest(
     @field:PositiveOrZero(message = "quantity must be ≥ 0")
     val quantity: BigDecimal,
 
+    /** Optional per-log rate override (≥ 0). Null = use subscription→catalog cascade. */
+    @field:PositiveOrZero(message = "customRatePerUnit must be ≥ 0")
+    val customRatePerUnit: BigDecimal? = null,
+
+    /** Phase C: optional per-log internal COST override (≥ 0). Null = use catalog default. Internal-only. */
+    @field:PositiveOrZero(message = "customCostPerUnit must be ≥ 0")
+    val customCostPerUnit: BigDecimal? = null,
+
     @field:NotNull(message = "performedAt is required")
     val performedAt: LocalDate,
 
@@ -45,6 +53,14 @@ data class UpdateServiceLogRequest(
     @field:NotNull(message = "quantity is required")
     @field:PositiveOrZero(message = "quantity must be ≥ 0")
     val quantity: BigDecimal,
+
+    /** Optional per-log rate override (≥ 0). Null = use subscription→catalog cascade. */
+    @field:PositiveOrZero(message = "customRatePerUnit must be ≥ 0")
+    val customRatePerUnit: BigDecimal? = null,
+
+    /** Phase C: optional per-log internal COST override (≥ 0). Null = use catalog default. Internal-only. */
+    @field:PositiveOrZero(message = "customCostPerUnit must be ≥ 0")
+    val customCostPerUnit: BigDecimal? = null,
 
     @field:NotNull(message = "performedAt is required")
     val performedAt: LocalDate,
@@ -69,6 +85,10 @@ data class ServiceLogResponse(
     val customerId: Long,
     val serviceCode: String,
     val quantity: BigDecimal,
+    /** Per-log rate override; null = use subscription→catalog cascade. */
+    val customRatePerUnit: BigDecimal?,
+    /** Phase C: per-log internal cost override; null = use catalog default. */
+    val customCostPerUnit: BigDecimal?,
     val performedAt: LocalDate,
     val attachedTo: AttachedRefResponse,
     val performedBy: String,

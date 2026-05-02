@@ -56,6 +56,21 @@ data class ServiceCatalog(
     @field:PositiveOrZero(message = "standardRatePerUnit must be ≥ 0")
     val standardRatePerUnit: BigDecimal,
 
+    /**
+     * Internal-only standard cost per unit (Phase B). Tracks what it costs
+     * the tenant to perform this service. Used by billing-run cost
+     * snapshots; never appears on customer-facing invoices.
+     *
+     * Per-execution overrides (Phase C, Option A): `ServiceLog.customCostPerUnit`
+     * fully replaces this value when set on a specific log.
+     *
+     * Null = "no cost data captured yet" — admin can leave blank and fill
+     * in later. Cost snapshots will record null cost / null margin and the
+     * reconciliation report will flag those rows as missing data.
+     */
+    @field:PositiveOrZero(message = "standardCostPerUnit must be ≥ 0")
+    val standardCostPerUnit: BigDecimal? = null,
+
     /** FK to FreighAi `charge_types._id` (e.g. "CHG-00102"). */
     @field:NotBlank(message = "freighaiChargeTypeId is required")
     @Indexed

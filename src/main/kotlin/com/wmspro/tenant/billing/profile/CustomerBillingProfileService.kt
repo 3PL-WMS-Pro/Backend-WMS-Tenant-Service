@@ -285,15 +285,17 @@ class CustomerBillingProfileService(
         }
 
     /**
-     * Verifies all three FreighAi ChargeType IDs exist & are active. We hit
-     * FreighAi sequentially (only 3 calls — no need to parallelise) and
-     * collect failures so the caller sees all problems at once instead of
-     * fixing them one-by-one.
+     * Verifies the FreighAi ChargeType IDs exist & are active in FreighAi.
+     *
+     * Phase A: any of the three IDs may now be null on the request (the
+     * customer profile inherits tenant defaults). Null values are skipped
+     * here — the cascade at billing time will fall back to
+     * TenantBillingDefaults. Non-null values are validated as before.
      */
     private fun validateChargeTypes(
-        storageChargeTypeId: String,
-        inboundChargeTypeId: String,
-        outboundChargeTypeId: String,
+        storageChargeTypeId: String?,
+        inboundChargeTypeId: String?,
+        outboundChargeTypeId: String?,
         authToken: String
     ) {
         val errors = mutableListOf<String>()
@@ -302,6 +304,7 @@ class CustomerBillingProfileService(
             "inbound movement" to inboundChargeTypeId,
             "outbound movement" to outboundChargeTypeId
         ).forEach { (kind, id) ->
+            if (id.isNullOrBlank()) return@forEach
             val resolved = freighAiChargeTypeClient.getChargeType(id, authToken)
             when {
                 resolved == null -> errors += "FreighAi ChargeType '$id' (for $kind) not found in FreighAi"

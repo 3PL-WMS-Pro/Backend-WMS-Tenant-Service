@@ -6,14 +6,32 @@ import com.wmspro.common.external.freighai.client.InvoiceCreationResult
 import com.wmspro.common.external.freighai.dto.CreateFreighAiInvoiceRequest
 import com.wmspro.common.external.freighai.dto.FreighAiChargeType
 import com.wmspro.common.external.freighai.dto.FreighAiInvoiceLineItem
+import com.wmspro.tenant.billing.adjustment.MovementCostAdjustment
+import com.wmspro.tenant.billing.adjustment.MovementCostAdjustmentService
+import com.wmspro.tenant.billing.catalog.ServiceCatalog
 import com.wmspro.tenant.billing.catalog.ServiceCatalogRepository
+import com.wmspro.tenant.billing.costs.TenantOperationalCosts
+import com.wmspro.tenant.billing.costs.TenantOperationalCostsService
+import com.wmspro.tenant.billing.defaults.TenantBillingDefaults
+import com.wmspro.tenant.billing.defaults.TenantBillingDefaultsService
+import com.wmspro.tenant.billing.invoice.aggregator.AggregatedServiceLine
+import com.wmspro.tenant.billing.invoice.aggregator.InboundMovementResult
 import com.wmspro.tenant.billing.invoice.aggregator.MovementAggregator
 import com.wmspro.tenant.billing.invoice.aggregator.OccupancyAggregator
+import com.wmspro.tenant.billing.invoice.aggregator.OccupancyContribution
+import com.wmspro.tenant.billing.invoice.aggregator.OccupancyContributionKind
+import com.wmspro.tenant.billing.invoice.aggregator.OccupancyResult
+import com.wmspro.tenant.billing.invoice.aggregator.OutboundMovementResult
 import com.wmspro.tenant.billing.invoice.aggregator.ServiceLogAggregator
 import com.wmspro.tenant.billing.invoice.cascade.WmsInternalCascadeClient
 import com.wmspro.tenant.billing.profile.CustomerBillingProfile
 import com.wmspro.tenant.billing.profile.CustomerBillingProfileRepository
 import com.wmspro.tenant.billing.profile.ProjectRate
+import com.wmspro.tenant.billing.snapshot.BillingRunCostSnapshot
+import com.wmspro.tenant.billing.snapshot.BillingRunCostSnapshotRepository
+import com.wmspro.tenant.billing.snapshot.CostAdjustmentSnapshot
+import com.wmspro.tenant.billing.snapshot.SnapshotRef
+import com.wmspro.tenant.billing.snapshot.SnapshotSourceType
 import com.wmspro.tenant.dto.GetOrAssignRequestItem
 import com.wmspro.tenant.repository.AccountIdMappingRepository
 import com.wmspro.tenant.service.AccountIdMappingService
@@ -66,7 +84,11 @@ class BillingRunService(
     private val serviceLogAggregator: ServiceLogAggregator,
     private val freighAiInvoiceClient: FreighAiInvoiceClient,
     private val freighAiChargeTypeClient: FreighAiChargeTypeClient,
-    private val cascadeClient: WmsInternalCascadeClient
+    private val cascadeClient: WmsInternalCascadeClient,
+    private val tenantBillingDefaultsService: TenantBillingDefaultsService,
+    private val tenantOperationalCostsService: TenantOperationalCostsService,
+    private val costSnapshotRepository: BillingRunCostSnapshotRepository,
+    private val movementCostAdjustmentService: MovementCostAdjustmentService
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -314,6 +336,17 @@ class BillingRunService(
             "BillingRun SUBMITTED: customerId={} month={} → freighaiInvoiceNo={} grandTotal={}",
             customerId, billingMonth, saved.freighaiInvoiceNo, saved.grandTotal
         )
+
+        // Phase B: write cost snapshots after invoice save. Failures here are
+        // logged but don't fail the run — snapshots are non-critical metadata
+        // that the reconciliation report consumes; the customer-facing invoice
+        // and FreighAi submission are unaffected if snapshot writes fail.
+        try {
+            writeCostSnapshots(saved.billingInvoiceId, customerId, billingMonth, context)
+        } catch (e: Exception) {
+            logger.error("Cost snapshot write failed for invoice {} — continuing", saved.billingInvoiceId, e)
+        }
+
         return saved
     }
 
@@ -350,6 +383,30 @@ class BillingRunService(
         val ginIds = invoice.movementLines.filter { it.direction == MovementDirection.OUTBOUND }
             .flatMap { it.sourceRecordIds }.distinct()
         val serviceLogIds = invoice.serviceLines.flatMap { it.serviceLogIds }.distinct()
+
+        // Phase B: delete cost snapshots tied to this invoice. Snapshots are
+        // immutable historical records, so cancelling the invoice is the only
+        // path that removes them. Done before cascade clear-lock so a partial
+        // failure leaves the system in a recoverable state (invoice still
+        // CANCELLED, locks cleared, only stale snapshots remain).
+        try {
+            val deleted = costSnapshotRepository.deleteByBillingInvoiceId(billingInvoiceId)
+            if (deleted > 0) {
+                logger.info("Deleted {} cost snapshots tied to cancelled invoice {}", deleted, billingInvoiceId)
+            }
+        } catch (e: Exception) {
+            logger.error("Cost snapshot delete failed for cancelled invoice {} — continuing", billingInvoiceId, e)
+        }
+
+        // Phase C: release MovementCostAdjustment locks (set billingInvoiceId
+        // back to null) so admins can edit/delete the adjustments again now
+        // that they're no longer attached to a SUBMITTED invoice.
+        try {
+            movementCostAdjustmentService.unlockFromBillingInvoice(billingInvoiceId)
+        } catch (e: Exception) {
+            logger.error("Movement cost adjustment unlock failed for cancelled invoice {} — continuing", billingInvoiceId, e)
+        }
+
         val outcome = cascadeClient.clearLocks(grnIds, ginIds, serviceLogIds)
         if (!outcome.isAllSuccess()) {
             logger.warn(
@@ -404,44 +461,74 @@ class BillingRunService(
 
         val warnings = mutableListOf<DataQualityWarning>()
 
+        // Phase A: tenant-level defaults sit at the bottom of the rate +
+        // ChargeType-binding cascade. Loaded once per run; null = "admin
+        // hasn't configured tenant defaults yet" → cascade simply skips.
+        val tenantDefaults: TenantBillingDefaults? = tenantBillingDefaultsService.findOrNull()
+        // Phase B: tenant-level cost defaults for the cost-side ladder.
+        // Snapshotted into BillingContext so writeCostSnapshots() uses the
+        // exact value that was active when the line totals were computed.
+        val tenantCosts: TenantOperationalCosts? = tenantOperationalCostsService.findOrNull()
+
+        // Resolve effective ChargeType IDs via cascade (customer profile
+        // first, fall back to tenant default).
+        val storageChargeTypeId =
+            profile.freighaiStorageChargeTypeId ?: tenantDefaults?.freighaiStorageChargeTypeId
+        val inboundChargeTypeId =
+            profile.freighaiInboundMovementChargeTypeId ?: tenantDefaults?.freighaiInboundMovementChargeTypeId
+        val outboundChargeTypeId =
+            profile.freighaiOutboundMovementChargeTypeId ?: tenantDefaults?.freighaiOutboundMovementChargeTypeId
+
         // Audit fix (Finding 12): batch-fetch all FreighAi ChargeTypes once,
         // index by id, then look up locally. Replaces the previous per-call
         // pattern (3 fixed + 1 per service-subscription = N+3 calls) with a
         // single round-trip.
         val chargeTypeIndex = freighAiChargeTypeClient.listChargeTypes(authToken, activeOnly = false)
             .associateBy { it.chargeTypeId }
-        val storageCt = chargeTypeIndex[profile.freighaiStorageChargeTypeId]
-        val inboundCt = chargeTypeIndex[profile.freighaiInboundMovementChargeTypeId]
-        val outboundCt = chargeTypeIndex[profile.freighaiOutboundMovementChargeTypeId]
+        val storageCt = storageChargeTypeId?.let { chargeTypeIndex[it] }
+        val inboundCt = inboundChargeTypeId?.let { chargeTypeIndex[it] }
+        val outboundCt = outboundChargeTypeId?.let { chargeTypeIndex[it] }
         if (storageCt == null) warnings += DataQualityWarning(
             severity = WarningSeverity.BLOCKER,
             code = "STORAGE_CHARGE_TYPE_MISSING",
-            message = "Storage ChargeType '${profile.freighaiStorageChargeTypeId}' not found in FreighAi"
+            message = if (storageChargeTypeId.isNullOrBlank())
+                "No storage FreighAi ChargeType configured. Set it on the customer Billing tab or in Settings → Billing → Tenant Defaults."
+            else
+                "Storage ChargeType '$storageChargeTypeId' not found in FreighAi"
         )
         if (inboundCt == null) warnings += DataQualityWarning(
             severity = WarningSeverity.BLOCKER,
             code = "INBOUND_CHARGE_TYPE_MISSING",
-            message = "Inbound ChargeType '${profile.freighaiInboundMovementChargeTypeId}' not found in FreighAi"
+            message = if (inboundChargeTypeId.isNullOrBlank())
+                "No inbound movement FreighAi ChargeType configured. Set it on the customer Billing tab or in Settings → Billing → Tenant Defaults."
+            else
+                "Inbound ChargeType '$inboundChargeTypeId' not found in FreighAi"
         )
         if (outboundCt == null) warnings += DataQualityWarning(
             severity = WarningSeverity.BLOCKER,
             code = "OUTBOUND_CHARGE_TYPE_MISSING",
-            message = "Outbound ChargeType '${profile.freighaiOutboundMovementChargeTypeId}' not found in FreighAi"
+            message = if (outboundChargeTypeId.isNullOrBlank())
+                "No outbound movement FreighAi ChargeType configured. Set it on the customer Billing tab or in Settings → Billing → Tenant Defaults."
+            else
+                "Outbound ChargeType '$outboundChargeTypeId' not found in FreighAi"
         )
 
         // ── Storage lines ────────────────────────────────────────────
         val occupancy = occupancyAggregator.aggregate(customerId, billingMonth)
         val storageLines = mutableListOf<StorageLine>()
         var storageSubtotal = BigDecimal.ZERO
-        if (storageCt != null) {
+        if (storageCt != null && storageChargeTypeId != null) {
             for ((projectCode, cbmDays) in occupancy.cbmDaysByProject) {
                 if (cbmDays.signum() == 0) continue
-                val (rate, projectLabel) = resolveStorageRate(profile, projectCode)
-                if (rate.signum() == 0) {
+                val (rate, projectLabel) = resolveStorageRate(profile, projectCode, tenantDefaults)
+                if (rate == null || rate.signum() == 0) {
                     warnings += DataQualityWarning(
                         severity = WarningSeverity.WARNING,
-                        code = "STORAGE_RATE_ZERO",
-                        message = "Storage rate for project '${projectCode ?: "Unassigned"}' is 0 — line skipped",
+                        code = if (rate == null) "STORAGE_RATE_MISSING" else "STORAGE_RATE_ZERO",
+                        message = if (rate == null)
+                            "No storage rate resolved for project '${projectCode ?: "Unassigned"}' — set on profile or tenant defaults — line skipped"
+                        else
+                            "Storage rate for project '${projectCode ?: "Unassigned"}' is 0 — line skipped",
                         affectedIds = listOf(projectCode ?: "_default_")
                     )
                     continue
@@ -457,17 +544,19 @@ class BillingRunService(
                     vatPercent = storageCt.vatPercent,
                     vatAmount = vatAmt,
                     description = "Storage – ${projectLabel ?: "Unassigned"} – ${formatMonth(billingMonth)}",
-                    freighaiChargeTypeId = profile.freighaiStorageChargeTypeId
+                    freighaiChargeTypeId = storageChargeTypeId
                 )
                 storageSubtotal = storageSubtotal.add(amount)
             }
         }
-        // Apply minimum.
+        // Apply minimum (cascade: profile → tenant default).
+        val effectiveMinimum = profile.defaultMonthlyMinimum ?: tenantDefaults?.defaultMonthlyMinimum
         var minimumApplied: BigDecimal? = null
-        if (profile.defaultMonthlyMinimum != null
-            && storageSubtotal < profile.defaultMonthlyMinimum
-            && storageCt != null) {
-            val gap = profile.defaultMonthlyMinimum.subtract(storageSubtotal).setScale(2, RoundingMode.HALF_UP)
+        if (effectiveMinimum != null
+            && storageSubtotal < effectiveMinimum
+            && storageCt != null
+            && storageChargeTypeId != null) {
+            val gap = effectiveMinimum.subtract(storageSubtotal).setScale(2, RoundingMode.HALF_UP)
             if (gap.signum() > 0) {
                 val vatAmt = gap.multiply(storageCt.vatPercent).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
                 storageLines += StorageLine(
@@ -479,7 +568,7 @@ class BillingRunService(
                     vatPercent = storageCt.vatPercent,
                     vatAmount = vatAmt,
                     description = "Storage minimum top-up – ${formatMonth(billingMonth)}",
-                    freighaiChargeTypeId = profile.freighaiStorageChargeTypeId,
+                    freighaiChargeTypeId = storageChargeTypeId,
                     isMinimumTopUp = true
                 )
                 minimumApplied = gap
@@ -497,10 +586,15 @@ class BillingRunService(
 
         // ── Movement lines ───────────────────────────────────────────
         val movementLines = mutableListOf<MovementLine>()
-        if (inboundCt != null) {
+        // Phase B: capture aggregator outputs at function scope so they can
+        // be threaded into BillingContext for cost-snapshot writes later.
+        var inboundResult: InboundMovementResult? = null
+        var outboundResult: OutboundMovementResult? = null
+        if (inboundCt != null && inboundChargeTypeId != null) {
             val inbound = movementAggregator.aggregateInbound(customerId, billingMonth)
+            inboundResult = inbound
             for ((projectCode, bucket) in inbound.byProject) {
-                val (rate, projectLabel) = resolveInboundRate(profile, projectCode)
+                val (rate, projectLabel) = resolveInboundRate(profile, projectCode, tenantDefaults)
                 if (rate == null || rate.signum() == 0) continue  // null rate = no inbound charge
                 val amount = bucket.totalCbm.multiply(rate).setScale(2, RoundingMode.HALF_UP)
                 val vatAmt = amount.multiply(inboundCt.vatPercent).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
@@ -514,7 +608,7 @@ class BillingRunService(
                     vatPercent = inboundCt.vatPercent,
                     vatAmount = vatAmt,
                     description = "Inbound movement – ${projectLabel ?: "Unassigned"} – ${formatMonth(billingMonth)}",
-                    freighaiChargeTypeId = profile.freighaiInboundMovementChargeTypeId,
+                    freighaiChargeTypeId = inboundChargeTypeId,
                     sourceRecordIds = bucket.sourceRecordIds.toList()
                 )
             }
@@ -525,10 +619,11 @@ class BillingRunService(
                 affectedIds = listOf(w.recordId)
             )
         }
-        if (outboundCt != null) {
+        if (outboundCt != null && outboundChargeTypeId != null) {
             val outbound = movementAggregator.aggregateOutbound(customerId, billingMonth)
+            outboundResult = outbound
             for ((projectCode, bucket) in outbound.byProject) {
-                val (rate, projectLabel) = resolveOutboundRate(profile, projectCode)
+                val (rate, projectLabel) = resolveOutboundRate(profile, projectCode, tenantDefaults)
                 if (rate == null || rate.signum() == 0) continue
                 val amount = bucket.totalCbm.multiply(rate).setScale(2, RoundingMode.HALF_UP)
                 val vatAmt = amount.multiply(outboundCt.vatPercent).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
@@ -542,7 +637,7 @@ class BillingRunService(
                     vatPercent = outboundCt.vatPercent,
                     vatAmount = vatAmt,
                     description = "Outbound movement – ${projectLabel ?: "Unassigned"} – ${formatMonth(billingMonth)}",
-                    freighaiChargeTypeId = profile.freighaiOutboundMovementChargeTypeId,
+                    freighaiChargeTypeId = outboundChargeTypeId,
                     sourceRecordIds = bucket.sourceRecordIds.toList()
                 )
             }
@@ -557,8 +652,11 @@ class BillingRunService(
         // ── Service lines ────────────────────────────────────────────
         val serviceLines = mutableListOf<ServiceLine>()
         val aggregated = serviceLogAggregator.aggregate(customerId, billingMonth)
+        // Phase B: lift catalogByCode out of the conditional so cost
+        // snapshots can use it after lines are built. Empty when no logs.
+        var catalogByCode: Map<String, ServiceCatalog> = emptyMap()
         if (aggregated.isNotEmpty()) {
-            val catalogByCode = catalogRepository.findAll().associateBy { it.serviceCode }
+            catalogByCode = catalogRepository.findAll().associateBy { it.serviceCode }
             for ((serviceCode, agg) in aggregated) {
                 val sub = profile.serviceSubscriptions.firstOrNull { it.serviceCode == serviceCode }
                 val cat = catalogByCode[serviceCode]
@@ -580,19 +678,30 @@ class BillingRunService(
                     )
                     continue
                 }
-                val rate = sub.customRatePerUnit ?: cat.standardRatePerUnit
-                val vatPct = cat.vatPercent ?: BigDecimal.ZERO
+                // Cascade rate when a log has no per-entry override.
+                val cascadeRate = sub.customRatePerUnit ?: cat.standardRatePerUnit
+                // Sum subtotal honoring each log's own customRatePerUnit when set;
+                // logs without override fall back to the cascade rate. Rounding to
+                // 2dp here so the invoice's totals are the cents-truthful sum.
+                val amount = agg.entries.fold(BigDecimal.ZERO) { acc, entry ->
+                    val effRate = entry.customRatePerUnit ?: cascadeRate
+                    acc.add(entry.quantity.multiply(effRate))
+                }.setScale(2, RoundingMode.HALF_UP)
+                // Blended rate so the invoice line still reads as qty × rate ≈ amount.
+                // If all entries shared one rate, blendedRate equals it exactly.
+                val blendedRate = if (agg.totalQuantity > BigDecimal.ZERO) {
+                    amount.divide(agg.totalQuantity, 2, RoundingMode.HALF_UP)
+                } else BigDecimal.ZERO
                 // Use the prefetched chargeTypeIndex (Finding 12 fix) to avoid an N+1 round-trip per service.
                 val ctForVat = chargeTypeIndex[cat.freighaiChargeTypeId]
                 val effectiveVat = cat.vatPercent ?: ctForVat?.vatPercent ?: BigDecimal.ZERO
-                val amount = agg.quantity.multiply(rate).setScale(2, RoundingMode.HALF_UP)
                 val vatAmt = amount.multiply(effectiveVat).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
                 serviceLines += ServiceLine(
                     serviceCode = serviceCode,
                     serviceLabel = cat.label,
                     unit = cat.unit,
-                    quantity = agg.quantity,
-                    ratePerUnit = rate,
+                    quantity = agg.totalQuantity,
+                    ratePerUnit = blendedRate,
                     amount = amount,
                     vatPercent = effectiveVat,
                     vatAmount = vatAmt,
@@ -621,28 +730,243 @@ class BillingRunService(
             totalVat = totalVat,
             grandTotal = grandTotal,
             minimumChargeApplied = minimumApplied,
-            warnings = warnings
+            warnings = warnings,
+            occupancyResult = occupancy,
+            inboundResult = inboundResult,
+            outboundResult = outboundResult,
+            serviceAggregated = aggregated,
+            catalogByCode = catalogByCode,
+            tenantCostDefaults = tenantCosts
         )
     }
 
-    private fun resolveStorageRate(profile: CustomerBillingProfile, projectCode: String?): Pair<BigDecimal, String?> {
-        if (projectCode == null) return profile.defaultCbmRatePerDay to null
-        val project = profile.projects.firstOrNull { it.projectCode == projectCode && it.isActive }
-        return if (project != null) project.cbmRatePerDay to project.label
-        else profile.defaultCbmRatePerDay to null
+    // ──────────────────────────────────────────────────────────────────
+    // Phase B: cost snapshot writer
+    // ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Writes one [BillingRunCostSnapshot] per source record (GRN, GIN,
+     * ServiceLog) plus one per storage line (project bucket) into the
+     * `billing_run_cost_snapshot` collection. The snapshots are immutable
+     * once written and are only deleted when the parent invoice is
+     * cancelled.
+     *
+     * Granularity rationale:
+     *   - Storage: one snapshot per (project) bucket. Per-storage-item
+     *     granularity would explode for large customers (e.g. 8000+ items)
+     *     with no audit value beyond what the bucket already provides.
+     *   - Movement: one snapshot per source GRN/GIN. Per-shipment cost
+     *     adjustments (Phase C) attach to specific GRNs/GINs, so this is
+     *     the natural granularity.
+     *   - Service: one snapshot per ServiceLog. Per-log cost overrides
+     *     (Phase C) attach to specific logs, so per-log is required.
+     *
+     * Phase B writes empty `adjustments` lists. Phase C extends both
+     * movement and service paths to include real adjustments.
+     */
+    private fun writeCostSnapshots(
+        billingInvoiceId: String,
+        customerId: Long,
+        billingMonth: String,
+        context: BillingContext
+    ) {
+        val tenantCosts = context.tenantCostDefaults
+        val storageBaseCost = tenantCosts?.baseStorageCostPerCbmDay
+        val inboundBaseCost = tenantCosts?.baseInboundCostPerCbm
+        val outboundBaseCost = tenantCosts?.baseOutboundCostPerCbm
+
+        val snapshots = mutableListOf<BillingRunCostSnapshot>()
+
+        // Storage — one per StorageLine.
+        for (line in context.storageLines) {
+            val totalCost = storageBaseCost?.let { line.cbmDays.multiply(it).setScale(2, RoundingMode.HALF_UP) }
+            val margin = totalCost?.let { line.amount.subtract(it).setScale(2, RoundingMode.HALF_UP) }
+            snapshots += BillingRunCostSnapshot(
+                snapshotId = newSnapshotId(),
+                billingInvoiceId = billingInvoiceId,
+                customerId = customerId,
+                billingMonth = billingMonth,
+                sourceType = SnapshotSourceType.STORAGE,
+                sourceRecord = SnapshotRef(
+                    type = SnapshotSourceType.STORAGE,
+                    id = "$billingInvoiceId-storage-${line.projectCode ?: "_unassigned_"}",
+                    number = line.projectLabel ?: "Unassigned"
+                ),
+                projectCode = line.projectCode,
+                quantity = line.cbmDays,
+                unit = "CBM-day",
+                baseCostRate = storageBaseCost,
+                adjustments = emptyList(),
+                effectiveCostRate = storageBaseCost,
+                totalCost = totalCost,
+                revenueRate = line.ratePerDay,
+                revenueAmount = line.amount,
+                margin = margin
+            )
+        }
+
+        // Movement — one snapshot per source GRN/GIN. The bucket's `records`
+        // list carries per-shipment CBM that the line builder used to produce
+        // the bucket totals. Phase C: pull MovementCostAdjustment entries per
+        // record and fold their delta into the effective cost rate.
+        val adjustmentsToLock = mutableListOf<String>()
+        for (line in context.movementLines) {
+            val baseCost = if (line.direction == MovementDirection.INBOUND) inboundBaseCost else outboundBaseCost
+            val sourceType = if (line.direction == MovementDirection.INBOUND)
+                SnapshotSourceType.INBOUND else SnapshotSourceType.OUTBOUND
+            val records = when (line.direction) {
+                MovementDirection.INBOUND -> context.inboundResult?.byProject?.get(line.projectCode)?.records
+                MovementDirection.OUTBOUND -> context.outboundResult?.byProject?.get(line.projectCode)?.records
+            } ?: emptyList()
+            for (rec in records) {
+                val recAdjustments = movementCostAdjustmentService.findUnbilledForRecord(rec.recordId)
+                val deltaSum = recAdjustments.fold(BigDecimal.ZERO) { acc, a -> acc.add(a.ratePerUnitDelta) }
+                val effectiveCostRate = baseCost?.add(deltaSum)
+                val totalCost = effectiveCostRate?.let { rec.cbm.multiply(it).setScale(2, RoundingMode.HALF_UP) }
+                val revenueAmount = rec.cbm.multiply(line.ratePerCbm).setScale(2, RoundingMode.HALF_UP)
+                val margin = totalCost?.let { revenueAmount.subtract(it).setScale(2, RoundingMode.HALF_UP) }
+                snapshots += BillingRunCostSnapshot(
+                    snapshotId = newSnapshotId(),
+                    billingInvoiceId = billingInvoiceId,
+                    customerId = customerId,
+                    billingMonth = billingMonth,
+                    sourceType = sourceType,
+                    sourceRecord = SnapshotRef(
+                        type = sourceType,
+                        id = rec.recordId,
+                        number = rec.recordNumber
+                    ),
+                    projectCode = rec.projectCode,
+                    quantity = rec.cbm,
+                    unit = "CBM",
+                    baseCostRate = baseCost,
+                    adjustments = recAdjustments.map { a ->
+                        CostAdjustmentSnapshot(
+                            sourceAdjustmentId = a.adjustmentId,
+                            reason = a.reason,
+                            ratePerUnitDelta = a.ratePerUnitDelta,
+                            notes = a.notes
+                        )
+                    },
+                    effectiveCostRate = effectiveCostRate,
+                    totalCost = totalCost,
+                    revenueRate = line.ratePerCbm,
+                    revenueAmount = revenueAmount,
+                    margin = margin
+                )
+                adjustmentsToLock += recAdjustments.map { it.adjustmentId }
+            }
+        }
+
+        // Service — one snapshot per ServiceLog within each ServiceLine.
+        for (line in context.serviceLines) {
+            val agg = context.serviceAggregated[line.serviceCode] ?: continue
+            val cat = context.catalogByCode[line.serviceCode] ?: continue
+            val baseCost = cat.standardCostPerUnit
+            val sub = context.profile.serviceSubscriptions.firstOrNull { it.serviceCode == line.serviceCode }
+            for (entry in agg.entries) {
+                // Phase C cascade: log override → catalog standard cost.
+                val effectiveCost = entry.customCostPerUnit ?: baseCost
+                val totalCost = effectiveCost?.let { entry.quantity.multiply(it).setScale(2, RoundingMode.HALF_UP) }
+                // Per-log effective rate uses the cascade we already built into the
+                // ServiceLogAggregator's per-entry shape (Phase 13).
+                val perLogRate = entry.customRatePerUnit
+                    ?: sub?.customRatePerUnit
+                    ?: cat.standardRatePerUnit
+                val revenueAmount = entry.quantity.multiply(perLogRate).setScale(2, RoundingMode.HALF_UP)
+                val margin = totalCost?.let { revenueAmount.subtract(it).setScale(2, RoundingMode.HALF_UP) }
+                snapshots += BillingRunCostSnapshot(
+                    snapshotId = newSnapshotId(),
+                    billingInvoiceId = billingInvoiceId,
+                    customerId = customerId,
+                    billingMonth = billingMonth,
+                    sourceType = SnapshotSourceType.SERVICE,
+                    sourceRecord = SnapshotRef(
+                        type = SnapshotSourceType.SERVICE,
+                        id = entry.serviceLogId,
+                        number = null
+                    ),
+                    serviceCode = line.serviceCode,
+                    projectCode = null,
+                    quantity = entry.quantity,
+                    unit = cat.unit,
+                    baseCostRate = baseCost,
+                    adjustments = emptyList(),
+                    effectiveCostRate = effectiveCost,
+                    totalCost = totalCost,
+                    revenueRate = perLogRate,
+                    revenueAmount = revenueAmount,
+                    margin = margin
+                )
+            }
+        }
+
+        if (snapshots.isNotEmpty()) {
+            costSnapshotRepository.saveAll(snapshots)
+            logger.info(
+                "Cost snapshots: wrote {} for invoice {} (storage={}, movement={}, service={})",
+                snapshots.size,
+                billingInvoiceId,
+                snapshots.count { it.sourceType == SnapshotSourceType.STORAGE },
+                snapshots.count { it.sourceType == SnapshotSourceType.INBOUND || it.sourceType == SnapshotSourceType.OUTBOUND },
+                snapshots.count { it.sourceType == SnapshotSourceType.SERVICE }
+            )
+        }
+        // Phase C: lock adjustments that were rolled into snapshots so further
+        // edits/deletes of those adjustments throw 409 until the invoice is
+        // cancelled.
+        if (adjustmentsToLock.isNotEmpty()) {
+            movementCostAdjustmentService.lockToBillingInvoice(adjustmentsToLock.distinct(), billingInvoiceId)
+        }
     }
 
-    private fun resolveInboundRate(profile: CustomerBillingProfile, projectCode: String?): Pair<BigDecimal?, String?> {
-        if (projectCode == null) return profile.defaultInboundCbmRate to null
-        val project = profile.projects.firstOrNull { it.projectCode == projectCode && it.isActive }
-        val rate = project?.inboundCbmRate ?: profile.defaultInboundCbmRate
+    private fun newSnapshotId(): String =
+        "costsnap_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+
+    /**
+     * Phase A cascade: project rate → customer default → tenant default.
+     * Each level is independently nullable; the first non-null wins.
+     * Returns null only if all three rungs are null.
+     */
+    private fun resolveStorageRate(
+        profile: CustomerBillingProfile,
+        projectCode: String?,
+        tenantDefaults: TenantBillingDefaults?
+    ): Pair<BigDecimal?, String?> {
+        val project = if (projectCode != null) {
+            profile.projects.firstOrNull { it.projectCode == projectCode && it.isActive }
+        } else null
+        val rate = project?.cbmRatePerDay
+            ?: profile.defaultCbmRatePerDay
+            ?: tenantDefaults?.defaultStorageRatePerCbmDay
         return rate to project?.label
     }
 
-    private fun resolveOutboundRate(profile: CustomerBillingProfile, projectCode: String?): Pair<BigDecimal?, String?> {
-        if (projectCode == null) return profile.defaultOutboundCbmRate to null
-        val project = profile.projects.firstOrNull { it.projectCode == projectCode && it.isActive }
-        val rate = project?.outboundCbmRate ?: profile.defaultOutboundCbmRate
+    private fun resolveInboundRate(
+        profile: CustomerBillingProfile,
+        projectCode: String?,
+        tenantDefaults: TenantBillingDefaults?
+    ): Pair<BigDecimal?, String?> {
+        val project = if (projectCode != null) {
+            profile.projects.firstOrNull { it.projectCode == projectCode && it.isActive }
+        } else null
+        val rate = project?.inboundCbmRate
+            ?: profile.defaultInboundCbmRate
+            ?: tenantDefaults?.defaultInboundCbmRate
+        return rate to project?.label
+    }
+
+    private fun resolveOutboundRate(
+        profile: CustomerBillingProfile,
+        projectCode: String?,
+        tenantDefaults: TenantBillingDefaults?
+    ): Pair<BigDecimal?, String?> {
+        val project = if (projectCode != null) {
+            profile.projects.firstOrNull { it.projectCode == projectCode && it.isActive }
+        } else null
+        val rate = project?.outboundCbmRate
+            ?: profile.defaultOutboundCbmRate
+            ?: tenantDefaults?.defaultOutboundCbmRate
         return rate to project?.label
     }
 
@@ -683,7 +1007,15 @@ private data class BillingContext(
     val totalVat: BigDecimal,
     val grandTotal: BigDecimal,
     val minimumChargeApplied: BigDecimal?,
-    val warnings: List<DataQualityWarning>
+    val warnings: List<DataQualityWarning>,
+    /** Phase B: raw aggregator outputs threaded through for cost snapshot writes. */
+    val occupancyResult: OccupancyResult? = null,
+    val inboundResult: InboundMovementResult? = null,
+    val outboundResult: OutboundMovementResult? = null,
+    val serviceAggregated: Map<String, AggregatedServiceLine> = emptyMap(),
+    val catalogByCode: Map<String, ServiceCatalog> = emptyMap(),
+    /** Phase B: tenant cost defaults snapshotted at build time. */
+    val tenantCostDefaults: TenantOperationalCosts? = null
 ) {
     fun toFreighAiLineItems(): List<FreighAiInvoiceLineItem> {
         val out = mutableListOf<FreighAiInvoiceLineItem>()

@@ -42,6 +42,36 @@ data class ServiceLog(
 
     val quantity: BigDecimal,
 
+    /**
+     * Optional per-log rate override. When set, takes precedence over the
+     * customer subscription's customRatePerUnit and the catalog's standardRatePerUnit
+     * for billing this single entry. Null = use the cascade
+     * (subscription → catalog).
+     *
+     * Invoice presentation still collapses to one line per serviceCode; the
+     * line's rate is the blended effective rate (totalSubtotal / totalQty).
+     * Per-log overrides are preserved on the model for audit and Excel
+     * export, never overwritten by the billing engine.
+     */
+    val customRatePerUnit: BigDecimal? = null,
+
+    /**
+     * Phase C — optional per-log COST override. Internal-only.
+     *
+     * When set, takes precedence over [com.wmspro.tenant.billing.catalog.ServiceCatalog.standardCostPerUnit]
+     * for THIS specific log entry. Null = use the catalog default.
+     *
+     * Cost is purely internal — never appears on the customer-facing
+     * invoice or in any payload sent to FreighAi. Used by the billing
+     * engine to write per-log cost into [BillingRunCostSnapshot] for
+     * later reconciliation reporting.
+     *
+     * Option A (absolute override) per the Phase 13 design call: the
+     * stored value REPLACES the catalog cost rather than adding to it.
+     * Reasons live in the existing `notes` field as free text.
+     */
+    val customCostPerUnit: BigDecimal? = null,
+
     /** User-entered date the service was performed. May be backdated. */
     val performedAt: LocalDate,
 

@@ -80,13 +80,17 @@ class MovementAggregator(
             }
             if (cbm.signum() == 0) continue
 
+            // Record number for snapshot display, when present (RR uses receivingRecordNumber).
+            val recordNumber = (rr["receivingRecordNumber"] as? String) ?: rrId
             byProject.compute(projectCode) { _, existing ->
+                val newRecord = MovementRecord(recordId = rrId, recordNumber = recordNumber, cbm = cbm, projectCode = projectCode)
                 if (existing == null) {
-                    MovementBucket(totalCbm = cbm, sourceRecordIds = mutableListOf(rrId))
+                    MovementBucket(totalCbm = cbm, sourceRecordIds = mutableListOf(rrId), records = mutableListOf(newRecord))
                 } else {
                     MovementBucket(
                         totalCbm = existing.totalCbm.add(cbm),
-                        sourceRecordIds = (existing.sourceRecordIds + rrId).toMutableList()
+                        sourceRecordIds = (existing.sourceRecordIds + rrId).toMutableList(),
+                        records = (existing.records + newRecord).toMutableList()
                     )
                 }
             }
@@ -132,13 +136,16 @@ class MovementAggregator(
             }
             if (cbm.signum() == 0) continue
 
+            val recordNumber = (ofr["fulfillmentNumber"] as? String) ?: (ofr["ginNumber"] as? String) ?: ofrId
             byProject.compute(projectCode) { _, existing ->
+                val newRecord = MovementRecord(recordId = ofrId, recordNumber = recordNumber, cbm = cbm, projectCode = projectCode)
                 if (existing == null) {
-                    MovementBucket(totalCbm = cbm, sourceRecordIds = mutableListOf(ofrId))
+                    MovementBucket(totalCbm = cbm, sourceRecordIds = mutableListOf(ofrId), records = mutableListOf(newRecord))
                 } else {
                     MovementBucket(
                         totalCbm = existing.totalCbm.add(cbm),
-                        sourceRecordIds = (existing.sourceRecordIds + ofrId).toMutableList()
+                        sourceRecordIds = (existing.sourceRecordIds + ofrId).toMutableList(),
+                        records = (existing.records + newRecord).toMutableList()
                     )
                 }
             }
@@ -279,7 +286,20 @@ data class OutboundMovementResult(
 
 data class MovementBucket(
     val totalCbm: BigDecimal,
-    val sourceRecordIds: MutableList<String>
+    val sourceRecordIds: MutableList<String>,
+    /** Phase B: per-record breakdown for cost snapshot writes. */
+    val records: MutableList<MovementRecord> = mutableListOf()
+)
+
+/**
+ * Per-shipment row (one GRN or one GIN) carried through the aggregator so
+ * the billing engine can write one cost snapshot per record.
+ */
+data class MovementRecord(
+    val recordId: String,
+    val recordNumber: String,
+    val cbm: BigDecimal,
+    val projectCode: String?
 )
 
 data class MovementWarning(

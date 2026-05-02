@@ -140,6 +140,7 @@ class ServiceCatalogController(
         label = label,
         unit = unit,
         standardRatePerUnit = standardRatePerUnit,
+        standardCostPerUnit = standardCostPerUnit,
         freighaiChargeTypeId = freighaiChargeTypeId,
         vatPercent = vatPercent,
         isActive = isActive,

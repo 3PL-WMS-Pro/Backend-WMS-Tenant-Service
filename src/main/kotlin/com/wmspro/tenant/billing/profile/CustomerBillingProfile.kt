@@ -43,30 +43,40 @@ data class CustomerBillingProfile(
     @Id
     val customerId: Long,
 
-    /** Storage fallback rate (per CBM-day). Used for items with no projectCode or unknown project. */
-    val defaultCbmRatePerDay: BigDecimal,
+    /**
+     * Storage fallback rate (per CBM-day). Optional — null means "inherit
+     * the tenant default from TenantBillingDefaults". Phase A relaxed this
+     * from required so most customer profiles can be created with all rate
+     * fields blank.
+     */
+    val defaultCbmRatePerDay: BigDecimal? = null,
 
-    /** Inbound movement fallback rate (per CBM received). Null = no charge for unprojected GRNs. */
+    /** Inbound movement fallback rate (per CBM received). Null → tenant default. */
     val defaultInboundCbmRate: BigDecimal? = null,
 
-    /** Outbound movement fallback rate (per CBM shipped). Null = no charge for unprojected GINs. */
+    /** Outbound movement fallback rate (per CBM shipped). Null → tenant default. */
     val defaultOutboundCbmRate: BigDecimal? = null,
 
-    /** Optional storage subtotal floor; if storage subtotal < this, a top-up line is added. */
+    /** Optional storage subtotal floor; null → tenant default. */
     val defaultMonthlyMinimum: BigDecimal? = null,
 
     val projects: List<ProjectRate> = emptyList(),
 
     val serviceSubscriptions: List<ServiceSubscription> = emptyList(),
 
-    /** FreighAi ChargeType bound to storage invoice lines. */
-    val freighaiStorageChargeTypeId: String,
+    /**
+     * FreighAi ChargeType bound to storage invoice lines.
+     * Phase A: nullable; null falls back to TenantBillingDefaults. Existing
+     * profiles keep their prior values (cascade picks customer-level when
+     * present, tenant otherwise). New profiles can omit these.
+     */
+    val freighaiStorageChargeTypeId: String? = null,
 
-    /** FreighAi ChargeType bound to inbound movement invoice lines. */
-    val freighaiInboundMovementChargeTypeId: String,
+    /** FreighAi ChargeType bound to inbound movement invoice lines. Null → tenant default. */
+    val freighaiInboundMovementChargeTypeId: String? = null,
 
-    /** FreighAi ChargeType bound to outbound movement invoice lines. */
-    val freighaiOutboundMovementChargeTypeId: String,
+    /** FreighAi ChargeType bound to outbound movement invoice lines. Null → tenant default. */
+    val freighaiOutboundMovementChargeTypeId: String? = null,
 
     /**
      * Cron skips customers where this is false. Profiles can be created with
@@ -99,7 +109,11 @@ data class CustomerBillingProfile(
 data class ProjectRate(
     val projectCode: String,
     val label: String,
-    val cbmRatePerDay: BigDecimal,
+    /**
+     * Per-project storage rate override. Null → cascade to customer
+     * default → tenant default.
+     */
+    val cbmRatePerDay: BigDecimal? = null,
     val inboundCbmRate: BigDecimal? = null,
     val outboundCbmRate: BigDecimal? = null,
     val isActive: Boolean = true

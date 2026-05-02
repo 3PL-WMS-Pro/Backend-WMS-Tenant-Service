@@ -60,6 +60,8 @@ class OccupancyAggregator(
 
         val storageBuckets = mutableMapOf<String?, BigDecimal>()
         val qbiBuckets = mutableMapOf<String?, BigDecimal>()
+        // Phase B: per-source-item breakdown for cost snapshot writes.
+        val contributionsByProject = mutableMapOf<String?, MutableList<OccupancyContribution>>()
         val warnings = mutableListOf<OccupancyWarning>()
 
         // ── Storage items ─────────────────────────────────────────────
@@ -94,6 +96,14 @@ class OccupancyAggregator(
             val projectCode = (item["projectCode"] as? String)?.takeIf { it.isNotBlank() }
             val contribution = cbm.multiply(BigDecimal(daysPresent))
             storageBuckets.merge(projectCode, contribution, BigDecimal::add)
+            contributionsByProject.getOrPut(projectCode) { mutableListOf() }.add(
+                OccupancyContribution(
+                    sourceId = item.getString("_id") ?: continue,
+                    kind = OccupancyContributionKind.STORAGE_ITEM,
+                    cbmDays = contribution,
+                    projectCode = projectCode
+                )
+            )
         }
 
         // ── Quantity-based inventory ──────────────────────────────────
@@ -130,6 +140,14 @@ class OccupancyAggregator(
                 .multiply(BigDecimal(totalQty))
                 .multiply(BigDecimal(daysPresent))
             qbiBuckets.merge(projectCode, contribution, BigDecimal::add)
+            contributionsByProject.getOrPut(projectCode) { mutableListOf() }.add(
+                OccupancyContribution(
+                    sourceId = item.getString("_id") ?: continue,
+                    kind = OccupancyContributionKind.QUANTITY_INVENTORY,
+                    cbmDays = contribution,
+                    projectCode = projectCode
+                )
+            )
         }
 
         // Combine & round.
@@ -142,7 +160,11 @@ class OccupancyAggregator(
             "Occupancy aggregation customerId={} month={} → buckets={} warnings={}",
             customerId, billingMonth, rounded.size, warnings.size
         )
-        return OccupancyResult(rounded, warnings)
+        return OccupancyResult(
+            cbmDaysByProject = rounded,
+            warnings = warnings,
+            contributionsByProject = contributionsByProject
+        )
     }
 
     // ── helpers ─────────────────────────────────────────────────────
@@ -218,8 +240,25 @@ class OccupancyAggregator(
 
 data class OccupancyResult(
     val cbmDaysByProject: Map<String?, BigDecimal>,
-    val warnings: List<OccupancyWarning>
+    val warnings: List<OccupancyWarning>,
+    /**
+     * Phase B: per-storage-item / per-QBI contribution breakdown grouped by
+     * project. Used by BillingRunService to write one cost snapshot per
+     * source item per billing run. Each entry represents one storage_item
+     * or one quantity_based_inventory row's CBM-day contribution to the
+     * project bucket.
+     */
+    val contributionsByProject: Map<String?, List<OccupancyContribution>> = emptyMap()
 )
+
+data class OccupancyContribution(
+    val sourceId: String,
+    val kind: OccupancyContributionKind,
+    val cbmDays: BigDecimal,
+    val projectCode: String?
+)
+
+enum class OccupancyContributionKind { STORAGE_ITEM, QUANTITY_INVENTORY }
 
 data class OccupancyWarning(
     val code: String,

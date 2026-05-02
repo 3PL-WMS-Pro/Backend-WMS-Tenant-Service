@@ -20,8 +20,9 @@ private const val PROJECT_CODE_PATTERN = "^[A-Z][A-Z0-9_]*$"
  * Billing-tab UI uses this full upsert for simplicity (single Save click).
  */
 data class UpsertCustomerBillingProfileRequest(
+    /** Phase A: optional. Null → inherit from TenantBillingDefaults. */
     @field:PositiveOrZero(message = "defaultCbmRatePerDay must be ≥ 0")
-    val defaultCbmRatePerDay: BigDecimal,
+    val defaultCbmRatePerDay: BigDecimal? = null,
 
     @field:PositiveOrZero(message = "defaultInboundCbmRate must be ≥ 0")
     val defaultInboundCbmRate: BigDecimal? = null,
@@ -38,14 +39,14 @@ data class UpsertCustomerBillingProfileRequest(
     @field:Valid
     val serviceSubscriptions: List<ServiceSubscriptionInput> = emptyList(),
 
-    @field:NotBlank(message = "freighaiStorageChargeTypeId is required")
-    val freighaiStorageChargeTypeId: String,
+    /** Phase A: optional. Null → inherit from TenantBillingDefaults. */
+    val freighaiStorageChargeTypeId: String? = null,
 
-    @field:NotBlank(message = "freighaiInboundMovementChargeTypeId is required")
-    val freighaiInboundMovementChargeTypeId: String,
+    /** Phase A: optional. Null → inherit from TenantBillingDefaults. */
+    val freighaiInboundMovementChargeTypeId: String? = null,
 
-    @field:NotBlank(message = "freighaiOutboundMovementChargeTypeId is required")
-    val freighaiOutboundMovementChargeTypeId: String,
+    /** Phase A: optional. Null → inherit from TenantBillingDefaults. */
+    val freighaiOutboundMovementChargeTypeId: String? = null,
 
     val billingEnabled: Boolean = false
 )
@@ -69,8 +70,9 @@ data class ProjectRateInput(
     @field:Size(max = 200, message = "label must be at most 200 characters")
     val label: String,
 
+    /** Phase A: optional. Null → cascade to customer default → tenant default. */
     @field:PositiveOrZero(message = "cbmRatePerDay must be ≥ 0")
-    val cbmRatePerDay: BigDecimal,
+    val cbmRatePerDay: BigDecimal? = null,
 
     @field:PositiveOrZero(message = "inboundCbmRate must be ≥ 0")
     val inboundCbmRate: BigDecimal? = null,
@@ -107,7 +109,7 @@ data class AddProjectRateRequest(
     val label: String,
 
     @field:PositiveOrZero
-    val cbmRatePerDay: BigDecimal,
+    val cbmRatePerDay: BigDecimal? = null,
 
     @field:PositiveOrZero
     val inboundCbmRate: BigDecimal? = null,
@@ -125,7 +127,7 @@ data class UpdateProjectRateRequest(
     val label: String,
 
     @field:PositiveOrZero
-    val cbmRatePerDay: BigDecimal,
+    val cbmRatePerDay: BigDecimal? = null,
 
     @field:PositiveOrZero
     val inboundCbmRate: BigDecimal? = null,
@@ -170,15 +172,15 @@ data class SetBillingEnabledRequest(
 
 data class CustomerBillingProfileResponse(
     val customerId: Long,
-    val defaultCbmRatePerDay: BigDecimal,
+    val defaultCbmRatePerDay: BigDecimal?,
     val defaultInboundCbmRate: BigDecimal?,
     val defaultOutboundCbmRate: BigDecimal?,
     val defaultMonthlyMinimum: BigDecimal?,
     val projects: List<ProjectRateResponse>,
     val serviceSubscriptions: List<ServiceSubscriptionResponse>,
-    val freighaiStorageChargeTypeId: String,
-    val freighaiInboundMovementChargeTypeId: String,
-    val freighaiOutboundMovementChargeTypeId: String,
+    val freighaiStorageChargeTypeId: String?,
+    val freighaiInboundMovementChargeTypeId: String?,
+    val freighaiOutboundMovementChargeTypeId: String?,
     val billingEnabled: Boolean,
     val createdAt: Instant?,
     val updatedAt: Instant?,
@@ -189,7 +191,7 @@ data class CustomerBillingProfileResponse(
 data class ProjectRateResponse(
     val projectCode: String,
     val label: String,
-    val cbmRatePerDay: BigDecimal,
+    val cbmRatePerDay: BigDecimal?,
     val inboundCbmRate: BigDecimal?,
     val outboundCbmRate: BigDecimal?,
     val isActive: Boolean
