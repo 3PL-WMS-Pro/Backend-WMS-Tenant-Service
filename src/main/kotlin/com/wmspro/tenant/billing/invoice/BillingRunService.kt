@@ -1018,54 +1018,77 @@ private data class BillingContext(
     val tenantCostDefaults: TenantOperationalCosts? = null
 ) {
     fun toFreighAiLineItems(): List<FreighAiInvoiceLineItem> {
-        val out = mutableListOf<FreighAiInvoiceLineItem>()
-        // Storage first (excluding minimum top-up), then minimum top-up if any,
-        // then movement, then services. Mirrors the worked example in the plan.
+        // Phase E: build a tagged buffer in the same emission order today's
+        // code uses, then hand it to [consolidateFreighAiLines] which folds
+        // sibling SERVICE lines into their matching MOVEMENT/STORAGE anchor
+        // by chargeTypeId. Groups without a SERVICE keep today's behavior.
+        val tagged = mutableListOf<TaggedFreighAiLine>()
+        var idx = 0
         storageLines.filter { !it.isMinimumTopUp }.forEach {
-            out += FreighAiInvoiceLineItem(
-                description = it.description,
-                quantity = it.cbmDays,
-                unit = "CBM-day",
-                unitPrice = it.ratePerDay,
-                chargeTypeId = it.freighaiChargeTypeId
+            tagged += TaggedFreighAiLine(
+                item = FreighAiInvoiceLineItem(
+                    description = it.description,
+                    quantity = it.cbmDays,
+                    unit = "CBM-day",
+                    unitPrice = it.ratePerDay,
+                    chargeTypeId = it.freighaiChargeTypeId
+                ),
+                source = FreighAiLineSource.STORAGE,
+                originalIndex = idx++
             )
         }
         storageLines.filter { it.isMinimumTopUp }.forEach {
-            out += FreighAiInvoiceLineItem(
-                description = it.description,
-                quantity = BigDecimal.ONE,
-                unit = "topup",
-                unitPrice = it.amount,
-                chargeTypeId = it.freighaiChargeTypeId
+            tagged += TaggedFreighAiLine(
+                item = FreighAiInvoiceLineItem(
+                    description = it.description,
+                    quantity = BigDecimal.ONE,
+                    unit = "topup",
+                    unitPrice = it.amount,
+                    chargeTypeId = it.freighaiChargeTypeId
+                ),
+                source = FreighAiLineSource.STORAGE,
+                originalIndex = idx++
             )
         }
         movementLines.filter { it.direction == MovementDirection.INBOUND }.forEach {
-            out += FreighAiInvoiceLineItem(
-                description = it.description,
-                quantity = it.totalCbm,
-                unit = "CBM",
-                unitPrice = it.ratePerCbm,
-                chargeTypeId = it.freighaiChargeTypeId
+            tagged += TaggedFreighAiLine(
+                item = FreighAiInvoiceLineItem(
+                    description = it.description,
+                    quantity = it.totalCbm,
+                    unit = "CBM",
+                    unitPrice = it.ratePerCbm,
+                    chargeTypeId = it.freighaiChargeTypeId
+                ),
+                source = FreighAiLineSource.MOVEMENT,
+                originalIndex = idx++
             )
         }
         movementLines.filter { it.direction == MovementDirection.OUTBOUND }.forEach {
-            out += FreighAiInvoiceLineItem(
-                description = it.description,
-                quantity = it.totalCbm,
-                unit = "CBM",
-                unitPrice = it.ratePerCbm,
-                chargeTypeId = it.freighaiChargeTypeId
+            tagged += TaggedFreighAiLine(
+                item = FreighAiInvoiceLineItem(
+                    description = it.description,
+                    quantity = it.totalCbm,
+                    unit = "CBM",
+                    unitPrice = it.ratePerCbm,
+                    chargeTypeId = it.freighaiChargeTypeId
+                ),
+                source = FreighAiLineSource.MOVEMENT,
+                originalIndex = idx++
             )
         }
         serviceLines.forEach {
-            out += FreighAiInvoiceLineItem(
-                description = it.description,
-                quantity = it.quantity,
-                unit = it.unit,
-                unitPrice = it.ratePerUnit,
-                chargeTypeId = it.freighaiChargeTypeId
+            tagged += TaggedFreighAiLine(
+                item = FreighAiInvoiceLineItem(
+                    description = it.description,
+                    quantity = it.quantity,
+                    unit = it.unit,
+                    unitPrice = it.ratePerUnit,
+                    chargeTypeId = it.freighaiChargeTypeId
+                ),
+                source = FreighAiLineSource.SERVICE,
+                originalIndex = idx++
             )
         }
-        return out
+        return consolidateFreighAiLines(tagged)
     }
 }
