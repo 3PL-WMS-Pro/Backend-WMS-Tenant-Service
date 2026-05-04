@@ -84,9 +84,21 @@ internal fun consolidateFreighAiLines(
         }
         val newAmount = anchorAmount.add(serviceTotal).setScale(2, RoundingMode.HALF_UP)
         val newUnitPrice = newAmount.divide(anchor.item.quantity, 2, RoundingMode.HALF_UP)
+        // VAT folds via the same chargeTypeId, so all members of the group
+        // share one vatPercent. Sum the absolute vatAmount across services +
+        // anchor; non-anchor non-service lines keep their own vatAmount.
+        val foldedVatAmount = if (anchor.item.vatAmount != null) {
+            services.fold(anchor.item.vatAmount!!) { acc, t ->
+                acc.add(t.item.vatAmount ?: BigDecimal.ZERO)
+            }.setScale(2, RoundingMode.HALF_UP)
+        } else null
 
         for (t in nonServices) {
-            val item = if (t === anchor) anchor.item.copy(unitPrice = newUnitPrice) else t.item
+            val item = if (t === anchor) {
+                anchor.item.copy(unitPrice = newUnitPrice, vatAmount = foldedVatAmount)
+            } else {
+                t.item
+            }
             out += Positioned(t.originalIndex, item)
         }
     }

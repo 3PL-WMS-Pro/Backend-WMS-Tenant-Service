@@ -9,6 +9,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import java.time.Instant
+import java.util.UUID
 
 /**
  * `/api/v1/billing-runs` — admin-facing API to drive the billing engine.
@@ -100,6 +101,8 @@ class BillingRunController(
         val customerIds = request.customerIds
             ?: billingProfileRepository.findByBillingEnabled(true).map { it.customerId }
 
+        val triggeredAt = Instant.now()
+        val started = System.currentTimeMillis()
         val succeeded = mutableListOf<Long>()
         val skipped = mutableListOf<SkipDetail>()
         val failed = mutableListOf<FailDetail>()
@@ -117,11 +120,36 @@ class BillingRunController(
             }
         }
 
+        // Phase F #12: persist a BillingRunSummary so the BillingRunsScreen
+        // history page sees this run. Cron-triggered runs already write a
+        // summary via MonthlyBillingCron; this mirror covers manual sweeps.
+        try {
+            summaryRepository.save(
+                BillingRunSummary(
+                    runId = "run_${UUID.randomUUID().toString().replace("-", "").take(16)}",
+                    billingMonth = request.billingMonth,
+                    triggeredAt = triggeredAt,
+                    triggeredBy = userEmail,
+                    triggerType = "MANUAL",
+                    succeededCustomerIds = succeeded,
+                    skippedCustomerIds = skipped.map { it.customerId },
+                    failedCustomerIds = failed.map { it.customerId },
+                    skipReasons = skipped.associate { it.customerId.toString() to it.reason },
+                    failureMessages = failed.associate { it.customerId.toString() to it.errorMessage },
+                    durationMs = System.currentTimeMillis() - started
+                )
+            )
+        } catch (e: Exception) {
+            // Don't fail the sweep response if the audit log save misfires —
+            // log and move on. Sweep results are still returned to the UI.
+            logger.error("generate-all: failed to persist BillingRunSummary — sweep results unaffected", e)
+        }
+
         return ResponseEntity.ok(
             ApiResponse.success(
                 GenerateAllBillingRunsResponse(
                     billingMonth = request.billingMonth,
-                    triggeredAt = Instant.now(),
+                    triggeredAt = triggeredAt,
                     triggeredBy = userEmail,
                     succeeded = succeeded,
                     skipped = skipped,
@@ -180,5 +208,6 @@ internal fun WmsBillingInvoice.toResponse() = WmsBillingInvoiceResponse(
     generatedBy = generatedBy,
     cancelledAt = cancelledAt,
     cancelledBy = cancelledBy,
-    cancelReason = cancelReason
+    cancelReason = cancelReason,
+    displayStatus = deriveDisplayStatus(status, freighaiStatus)
 )

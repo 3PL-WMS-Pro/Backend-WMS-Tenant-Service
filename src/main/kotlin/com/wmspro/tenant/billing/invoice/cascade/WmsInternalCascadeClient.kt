@@ -58,7 +58,8 @@ class WmsInternalCascadeClient(
         billingMonth: String,
         receivingRecordIds: List<String>,
         fulfillmentIds: List<String>,
-        serviceLogIds: List<String>
+        serviceLogIds: List<String>,
+        authToken: String
     ): CascadeOutcome {
         val grnFails = mutableListOf<String>()
         val ginFails = mutableListOf<String>()
@@ -88,7 +89,8 @@ class WmsInternalCascadeClient(
                     pathTemplate = "/api/v1/internal/receiving-records/{id}/billing-lock",
                     id = id,
                     billingInvoiceId = billingInvoiceId,
-                    billingMonth = billingMonth
+                    billingMonth = billingMonth,
+                    authToken = authToken
                 )
             ) grnFails += id
         }
@@ -99,7 +101,8 @@ class WmsInternalCascadeClient(
                     pathTemplate = "/api/v1/internal/orders/{id}/billing-lock",
                     id = id,
                     billingInvoiceId = billingInvoiceId,
-                    billingMonth = billingMonth
+                    billingMonth = billingMonth,
+                    authToken = authToken
                 )
             ) ginFails += id
         }
@@ -115,7 +118,8 @@ class WmsInternalCascadeClient(
     fun clearLocks(
         receivingRecordIds: List<String>,
         fulfillmentIds: List<String>,
-        serviceLogIds: List<String>
+        serviceLogIds: List<String>,
+        authToken: String
     ): CascadeOutcome {
         val grnFails = mutableListOf<String>()
         val ginFails = mutableListOf<String>()
@@ -140,7 +144,8 @@ class WmsInternalCascadeClient(
             if (!clearLockExternal(
                     serviceUrl = inboundServiceUrl,
                     pathTemplate = "/api/v1/internal/receiving-records/{id}/billing-lock",
-                    id = id
+                    id = id,
+                    authToken = authToken
                 )
             ) grnFails += id
         }
@@ -149,7 +154,8 @@ class WmsInternalCascadeClient(
             if (!clearLockExternal(
                     serviceUrl = orderServiceUrl,
                     pathTemplate = "/api/v1/internal/orders/{id}/billing-lock",
-                    id = id
+                    id = id,
+                    authToken = authToken
                 )
             ) ginFails += id
         }
@@ -162,7 +168,8 @@ class WmsInternalCascadeClient(
         pathTemplate: String,
         id: String,
         billingInvoiceId: String,
-        billingMonth: String
+        billingMonth: String,
+        authToken: String
     ): Boolean {
         val url = serviceUrl + pathTemplate.replace("{id}", id)
         return try {
@@ -171,7 +178,7 @@ class WmsInternalCascadeClient(
                 HttpMethod.PUT,
                 HttpEntity(
                     mapOf("billingInvoiceId" to billingInvoiceId, "billingMonth" to billingMonth),
-                    buildInternalHeaders()
+                    buildInternalHeaders(authToken)
                 ),
                 String::class.java
             )
@@ -182,13 +189,13 @@ class WmsInternalCascadeClient(
         }
     }
 
-    private fun clearLockExternal(serviceUrl: String, pathTemplate: String, id: String): Boolean {
+    private fun clearLockExternal(serviceUrl: String, pathTemplate: String, id: String, authToken: String): Boolean {
         val url = serviceUrl + pathTemplate.replace("{id}", id)
         return try {
             val response = restTemplate.exchange(
                 url,
                 HttpMethod.DELETE,
-                HttpEntity<Void>(buildInternalHeaders()),
+                HttpEntity<Void>(buildInternalHeaders(authToken)),
                 String::class.java
             )
             response.statusCode.is2xxSuccessful
@@ -198,13 +205,22 @@ class WmsInternalCascadeClient(
         }
     }
 
-    private fun buildInternalHeaders(): HttpHeaders = HttpHeaders().apply {
+    private fun buildInternalHeaders(authToken: String): HttpHeaders = HttpHeaders().apply {
         contentType = MediaType.APPLICATION_JSON
         accept = listOf(MediaType.APPLICATION_JSON)
         // Forward the current tenant id so the receiving service binds the
         // write to the same tenant DB — same convention as the existing
         // CustomerMasterProxyService.
         TenantContext.getCurrentTenant()?.let { set("X-Client", it) }
+        // Phase F: forward the original request's JWT so downstream service
+        // auth filters accept the cascade call. Without this, inbound/order
+        // services return 401 and the lock cascade aborts the billing run.
+        if (authToken.isNotBlank()) {
+            set(
+                HttpHeaders.AUTHORIZATION,
+                if (authToken.startsWith("Bearer ", ignoreCase = true)) authToken else "Bearer $authToken"
+            )
+        }
     }
 }
 

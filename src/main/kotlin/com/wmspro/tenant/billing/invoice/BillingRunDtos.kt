@@ -107,8 +107,39 @@ data class WmsBillingInvoiceResponse(
     val generatedBy: String?,
     val cancelledAt: Instant?,
     val cancelledBy: String?,
-    val cancelReason: String?
+    val cancelReason: String?,
+    /**
+     * Phase F #13: single user-facing status string derived from the WMS
+     * status + FreighAi status. Frontend renders this as the only "Status"
+     * column on the WMS Invoices list page.
+     *
+     * Values: GENERATING | FAILED_TO_SEND | PROCESSING | AWAITING_SEND |
+     *         SENT | PARTIALLY_PAID | PAID | CANCELLED
+     */
+    val displayStatus: String
 )
+
+/**
+ * Phase F #13: collapse the WMS handoff state and the FreighAi customer-
+ * facing payment lifecycle into a single value the frontend renders. Keeps
+ * the logic on the server so the same mapping applies to detail + list +
+ * any future surface (PDF cover, emails, etc.).
+ */
+fun deriveDisplayStatus(wmsStatus: BillingInvoiceStatus, freighaiStatus: String?): String {
+    if (wmsStatus == BillingInvoiceStatus.CANCELLED) return "CANCELLED"
+    if (wmsStatus == BillingInvoiceStatus.SUBMISSION_FAILED) return "FAILED_TO_SEND"
+    if (wmsStatus == BillingInvoiceStatus.DRAFT) return "GENERATING"
+    // wmsStatus == SUBMITTED below
+    return when (freighaiStatus?.uppercase()) {
+        null, "" -> "PROCESSING"
+        "DRAFT" -> "AWAITING_SEND"
+        "SENT" -> "SENT"
+        "PARTIALLY_PAID" -> "PARTIALLY_PAID"
+        "PAID" -> "PAID"
+        "CANCELLED" -> "CANCELLED"
+        else -> freighaiStatus.uppercase()  // forward-compat for new FreighAi states
+    }
+}
 
 data class GenerateAllBillingRunsResponse(
     val billingMonth: String,

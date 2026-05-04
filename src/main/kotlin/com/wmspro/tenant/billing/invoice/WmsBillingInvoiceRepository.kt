@@ -28,6 +28,14 @@ interface WmsBillingInvoiceRepository : MongoRepository<WmsBillingInvoice, Strin
     fun findStaleSubmittedInvoices(staleBefore: Instant): List<WmsBillingInvoice>
 
     /**
+     * Used by manual sync (Phase F): every SUBMITTED invoice not yet in a
+     * final state on FreighAi, regardless of last-sync time. Invoked on
+     * the WMS Invoices list mount and by the "Refresh" button.
+     */
+    @Query("{ 'status': 'SUBMITTED', 'freighaiStatus': { \$nin: ['PAID', 'CANCELLED'] } }")
+    fun findActiveSubmittedInvoices(): List<WmsBillingInvoice>
+
+    /**
      * Used by ServiceLogs in Phase 5 to detect "is this month already
      * locked for this customer?" when carrying-over backdated entries.
      */

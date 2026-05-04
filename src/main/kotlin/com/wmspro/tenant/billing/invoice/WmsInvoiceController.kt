@@ -33,7 +33,8 @@ import java.time.Instant
 class WmsInvoiceController(
     private val invoiceRepository: WmsBillingInvoiceRepository,
     private val freighAiInvoiceClient: FreighAiInvoiceClient,
-    private val mongoTemplate: MongoTemplate
+    private val mongoTemplate: MongoTemplate,
+    private val syncService: WmsInvoiceSyncService
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -145,6 +146,26 @@ class WmsInvoiceController(
                 "Invoice detail retrieved"
             )
         )
+    }
+
+    /**
+     * Phase F #2: refresh every active SUBMITTED invoice in the current
+     * tenant against FreighAi. Frontend calls this on list mount and when
+     * the user clicks "Refresh". Uses the caller's JWT — no service-account
+     * credential required.
+     */
+    @PostMapping("/sync-all")
+    fun syncAll(httpRequest: HttpServletRequest): ResponseEntity<ApiResponse<SyncAllOutcome>> {
+        val authToken = httpRequest.getHeader(HttpHeaders.AUTHORIZATION).orEmpty()
+        if (authToken.isBlank()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(
+                ApiResponse.error("Missing Authorization header")
+            )
+        }
+        val outcome = syncService.syncAllForCurrentTenant(authToken)
+        val msg = "Refreshed ${outcome.refreshed} of ${outcome.total} invoices " +
+            "(${outcome.unchanged} unchanged, ${outcome.failed} failed)"
+        return ResponseEntity.ok(ApiResponse.success(outcome, msg))
     }
 
     /**

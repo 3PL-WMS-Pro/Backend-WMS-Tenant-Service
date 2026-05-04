@@ -182,6 +182,9 @@ class BillingRunService(
         val referenceNo = "WMS-$customerId-$billingMonth"
 
         // Pre-create DRAFT row.
+        // Phase F #7: no "in flight" placeholder — submissionAttempts only
+        // records real outcomes (success or failure), keeping the audit
+        // trail honest. The DRAFT status itself signals "in progress".
         val now = Instant.now()
         var draft = WmsBillingInvoice(
             billingInvoiceId = billingInvoiceId,
@@ -198,7 +201,7 @@ class BillingRunService(
             freighaiReferenceNo = referenceNo,
             generatedAt = now,
             generatedBy = triggeredBy,
-            submissionAttempts = listOf(SubmissionAttempt(attemptedAt = now, success = false, errorMessage = "in flight"))
+            submissionAttempts = emptyList()
         )
         draft = invoiceRepository.save(draft)
 
@@ -214,11 +217,12 @@ class BillingRunService(
             billingMonth = billingMonth,
             receivingRecordIds = grnIds,
             fulfillmentIds = ginIds,
-            serviceLogIds = serviceLogIds
+            serviceLogIds = serviceLogIds,
+            authToken = authToken
         )
         if (!cascadeOutcome.isAllSuccess()) {
             // Roll back any locks that did succeed.
-            cascadeClient.clearLocks(grnIds, ginIds, serviceLogIds)
+            cascadeClient.clearLocks(grnIds, ginIds, serviceLogIds, authToken)
             val failed = invoiceRepository.save(
                 draft.copy(
                     status = BillingInvoiceStatus.SUBMISSION_FAILED,
@@ -238,6 +242,12 @@ class BillingRunService(
         val freighaiInvoiceId: String
         val freighaiInvoiceNo: String
         val freighaiVoucherId: String?
+        // Phase F #3: capture FreighAi state at submit time so the WMS list
+        // shows a real status immediately, without waiting on the manual sync.
+        var freighaiStatusAtSubmit: String? = null
+        var freighaiInvoiceDateAtSubmit: LocalDate? = null
+        var freighaiDueDateAtSubmit: LocalDate? = null
+        var freighaiOutstandingAtSubmit: java.math.BigDecimal? = null
 
         if (existingFreighai != null) {
             // Audit fix (Finding 1): refuse to adopt a CANCELLED FreighAi invoice.
@@ -249,7 +259,7 @@ class BillingRunService(
             // FreighAi invoice (because there's no live invoice with this
             // referenceNo any more).
             if (existingFreighai.currentStatus?.equals("CANCELLED", ignoreCase = true) == true) {
-                cascadeClient.clearLocks(grnIds, ginIds, serviceLogIds)
+                cascadeClient.clearLocks(grnIds, ginIds, serviceLogIds, authToken)
                 invoiceRepository.save(
                     draft.copy(
                         status = BillingInvoiceStatus.SUBMISSION_FAILED,
@@ -274,10 +284,12 @@ class BillingRunService(
             freighaiInvoiceId = existingFreighai.invoiceId
             freighaiInvoiceNo = existingFreighai.invoiceNo
             freighaiVoucherId = existingFreighai.voucherId
+            freighaiStatusAtSubmit = existingFreighai.currentStatus
+            freighaiOutstandingAtSubmit = existingFreighai.outstandingAmount
         } else {
             val freighaiCustomerId = accountIdMappingRepository.findById(customerId).orElse(null)?.freighaiCustomerId
                 ?: run {
-                    cascadeClient.clearLocks(grnIds, ginIds, serviceLogIds)
+                    cascadeClient.clearLocks(grnIds, ginIds, serviceLogIds, authToken)
                     invoiceRepository.save(draft.copy(
                         status = BillingInvoiceStatus.SUBMISSION_FAILED,
                         submissionAttempts = draft.submissionAttempts + SubmissionAttempt(
@@ -302,9 +314,13 @@ class BillingRunService(
                     freighaiInvoiceId = result.invoice.invoiceId
                     freighaiInvoiceNo = result.invoice.invoiceNo
                     freighaiVoucherId = result.invoice.voucherId
+                    freighaiStatusAtSubmit = result.invoice.currentStatus ?: "DRAFT"
+                    freighaiInvoiceDateAtSubmit = result.invoice.invoiceDate
+                    freighaiDueDateAtSubmit = result.invoice.dueDate
+                    freighaiOutstandingAtSubmit = result.invoice.outstandingAmount
                 }
                 is InvoiceCreationResult.Failure -> {
-                    cascadeClient.clearLocks(grnIds, ginIds, serviceLogIds)
+                    cascadeClient.clearLocks(grnIds, ginIds, serviceLogIds, authToken)
                     val failed = invoiceRepository.save(draft.copy(
                         status = BillingInvoiceStatus.SUBMISSION_FAILED,
                         submissionAttempts = draft.submissionAttempts + SubmissionAttempt(
@@ -324,6 +340,12 @@ class BillingRunService(
                 freighaiInvoiceId = freighaiInvoiceId,
                 freighaiInvoiceNo = freighaiInvoiceNo,
                 freighaiVoucherId = freighaiVoucherId,
+                // Phase F #3: capture FreighAi state at submit so the WMS
+                // list page shows real status without waiting on /sync-all.
+                freighaiStatus = freighaiStatusAtSubmit,
+                freighaiInvoiceDate = freighaiInvoiceDateAtSubmit,
+                freighaiDueDate = freighaiDueDateAtSubmit,
+                freighaiOutstandingAmount = freighaiOutstandingAtSubmit,
                 lastSyncedAt = Instant.now(),
                 submissionAttempts = draft.submissionAttempts + SubmissionAttempt(
                     attemptedAt = Instant.now(),
@@ -407,7 +429,7 @@ class BillingRunService(
             logger.error("Movement cost adjustment unlock failed for cancelled invoice {} — continuing", billingInvoiceId, e)
         }
 
-        val outcome = cascadeClient.clearLocks(grnIds, ginIds, serviceLogIds)
+        val outcome = cascadeClient.clearLocks(grnIds, ginIds, serviceLogIds, authToken)
         if (!outcome.isAllSuccess()) {
             logger.warn(
                 "Cascade clear-lock for cancel of {} had failures: {} — manual cleanup may be needed.",
@@ -559,15 +581,26 @@ class BillingRunService(
             val gap = effectiveMinimum.subtract(storageSubtotal).setScale(2, RoundingMode.HALF_UP)
             if (gap.signum() > 0) {
                 val vatAmt = gap.multiply(storageCt.vatPercent).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
+                // Phase F #16: when there's no real storage activity, the
+                // minimum IS the storage charge — present it as a regular
+                // "Monthly storage" line. When there's partial activity
+                // below the minimum, keep the explicit "top-up" wording so
+                // the customer can see how the floor was applied.
+                val isPureMinimum = storageSubtotal.signum() == 0
+                val description = if (isPureMinimum)
+                    "Monthly storage – ${formatMonth(billingMonth)}"
+                else
+                    "Storage minimum top-up – ${formatMonth(billingMonth)}"
+                val label = if (isPureMinimum) "Monthly storage charge" else "Monthly minimum top-up"
                 storageLines += StorageLine(
                     projectCode = null,
-                    projectLabel = "Monthly minimum top-up",
+                    projectLabel = label,
                     cbmDays = BigDecimal.ZERO,
                     ratePerDay = BigDecimal.ZERO,
                     amount = gap,
                     vatPercent = storageCt.vatPercent,
                     vatAmount = vatAmt,
-                    description = "Storage minimum top-up – ${formatMonth(billingMonth)}",
+                    description = description,
                     freighaiChargeTypeId = storageChargeTypeId,
                     isMinimumTopUp = true
                 )
@@ -1031,7 +1064,9 @@ private data class BillingContext(
                     quantity = it.cbmDays,
                     unit = "CBM-day",
                     unitPrice = it.ratePerDay,
-                    chargeTypeId = it.freighaiChargeTypeId
+                    chargeTypeId = it.freighaiChargeTypeId,
+                    vatPercent = it.vatPercent,
+                    vatAmount = it.vatAmount
                 ),
                 source = FreighAiLineSource.STORAGE,
                 originalIndex = idx++
@@ -1044,7 +1079,9 @@ private data class BillingContext(
                     quantity = BigDecimal.ONE,
                     unit = "topup",
                     unitPrice = it.amount,
-                    chargeTypeId = it.freighaiChargeTypeId
+                    chargeTypeId = it.freighaiChargeTypeId,
+                    vatPercent = it.vatPercent,
+                    vatAmount = it.vatAmount
                 ),
                 source = FreighAiLineSource.STORAGE,
                 originalIndex = idx++
@@ -1057,7 +1094,9 @@ private data class BillingContext(
                     quantity = it.totalCbm,
                     unit = "CBM",
                     unitPrice = it.ratePerCbm,
-                    chargeTypeId = it.freighaiChargeTypeId
+                    chargeTypeId = it.freighaiChargeTypeId,
+                    vatPercent = it.vatPercent,
+                    vatAmount = it.vatAmount
                 ),
                 source = FreighAiLineSource.MOVEMENT,
                 originalIndex = idx++
@@ -1070,7 +1109,9 @@ private data class BillingContext(
                     quantity = it.totalCbm,
                     unit = "CBM",
                     unitPrice = it.ratePerCbm,
-                    chargeTypeId = it.freighaiChargeTypeId
+                    chargeTypeId = it.freighaiChargeTypeId,
+                    vatPercent = it.vatPercent,
+                    vatAmount = it.vatAmount
                 ),
                 source = FreighAiLineSource.MOVEMENT,
                 originalIndex = idx++
@@ -1083,7 +1124,9 @@ private data class BillingContext(
                     quantity = it.quantity,
                     unit = it.unit,
                     unitPrice = it.ratePerUnit,
-                    chargeTypeId = it.freighaiChargeTypeId
+                    chargeTypeId = it.freighaiChargeTypeId,
+                    vatPercent = it.vatPercent,
+                    vatAmount = it.vatAmount
                 ),
                 source = FreighAiLineSource.SERVICE,
                 originalIndex = idx++

@@ -16,13 +16,17 @@ class FreighAiLineConsolidatorTest {
         qty: String,
         unit: String,
         price: String,
-        ctId: String
+        ctId: String,
+        vatPercent: String? = null,
+        vatAmount: String? = null
     ) = FreighAiInvoiceLineItem(
         description = desc,
         quantity = BigDecimal(qty),
         unit = unit,
         unitPrice = BigDecimal(price),
-        chargeTypeId = ctId
+        chargeTypeId = ctId,
+        vatPercent = vatPercent?.let { BigDecimal(it) },
+        vatAmount = vatAmount?.let { BigDecimal(it) }
     )
 
     private fun tag(item: FreighAiInvoiceLineItem, source: FreighAiLineSource, idx: Int) =
@@ -185,6 +189,69 @@ class FreighAiLineConsolidatorTest {
     @Test
     fun `empty input returns empty list`() {
         assertEquals(emptyList<FreighAiInvoiceLineItem>(), consolidateFreighAiLines(emptyList()))
+    }
+
+    @Test
+    fun `VAT amounts pass through unchanged when no consolidation happens`() {
+        val storage = line("Storage – April 2026", "100", "CBM-day", "0.50", "CHG-00114",
+            vatPercent = "5", vatAmount = "2.50")
+        val outbound = line("Outbound movement – April 2026", "5", "CBM", "10.00", "CHG-00067",
+            vatPercent = "5", vatAmount = "2.50")
+
+        val result = consolidateFreighAiLines(listOf(
+            tag(storage, FreighAiLineSource.STORAGE, 0),
+            tag(outbound, FreighAiLineSource.MOVEMENT, 1)
+        ))
+
+        assertEquals(2, result.size)
+        assertBigDecimalEquals("2.50", result[0].vatAmount!!)
+        assertBigDecimalEquals("2.50", result[1].vatAmount!!)
+    }
+
+    @Test
+    fun `VAT folds into anchor when service merges`() {
+        // Outbound: 5 CBM × 10 = 50 AED, VAT @5% = 2.50
+        // Forklift: 1 hr × 100 = 100 AED, VAT @5% = 5.00
+        // Merged anchor takes blended unitPrice 30, vatAmount = 2.50 + 5.00 = 7.50
+        val outbound = line("Outbound movement – April 2026", "5", "CBM", "10.00", "CHG-00067",
+            vatPercent = "5", vatAmount = "2.50")
+        val forklift = line("Forklift Out – April 2026", "1", "hour", "100.00", "CHG-00067",
+            vatPercent = "5", vatAmount = "5.00")
+
+        val result = consolidateFreighAiLines(listOf(
+            tag(outbound, FreighAiLineSource.MOVEMENT, 0),
+            tag(forklift, FreighAiLineSource.SERVICE, 1)
+        ))
+
+        assertEquals(1, result.size)
+        val merged = result[0]
+        assertBigDecimalEquals("30.00", merged.unitPrice)
+        assertBigDecimalEquals("7.50", merged.vatAmount!!)
+        assertBigDecimalEquals("5", merged.vatPercent!!)
+    }
+
+    @Test
+    fun `multi-project outbound plus service folds VAT into anchor only`() {
+        // ProjectA preserved → keeps own VAT 2.50
+        // ProjectB anchor → absorbs forklift VAT (4.00 + 5.00 = 9.00)
+        val projA = line("Outbound – ProjectA", "5", "CBM", "10.00", "CHG-00067",
+            vatPercent = "5", vatAmount = "2.50")
+        val projB = line("Outbound – ProjectB", "8", "CBM", "10.00", "CHG-00067",
+            vatPercent = "5", vatAmount = "4.00")
+        val forklift = line("Forklift Out", "1", "hour", "100.00", "CHG-00067",
+            vatPercent = "5", vatAmount = "5.00")
+
+        val result = consolidateFreighAiLines(listOf(
+            tag(projA, FreighAiLineSource.MOVEMENT, 0),
+            tag(projB, FreighAiLineSource.MOVEMENT, 1),
+            tag(forklift, FreighAiLineSource.SERVICE, 2)
+        ))
+
+        assertEquals(2, result.size)
+        // ProjectA — unchanged
+        assertBigDecimalEquals("2.50", result[0].vatAmount!!)
+        // ProjectB — absorbs forklift VAT
+        assertBigDecimalEquals("9.00", result[1].vatAmount!!)
     }
 
     @Test

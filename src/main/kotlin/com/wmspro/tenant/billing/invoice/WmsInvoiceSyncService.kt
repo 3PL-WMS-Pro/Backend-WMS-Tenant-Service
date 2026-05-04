@@ -1,76 +1,48 @@
 package com.wmspro.tenant.billing.invoice
 
 import com.wmspro.common.external.freighai.client.FreighAiInvoiceClient
-import com.wmspro.common.tenant.TenantContext
-import com.wmspro.tenant.repository.TenantDatabaseMappingRepository
 import org.slf4j.LoggerFactory
-import org.springframework.beans.factory.annotation.Value
-import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
-import java.time.Duration
 import java.time.Instant
 
 /**
- * Hourly background sync of cached FreighAi status fields on every
- * SUBMITTED WmsBillingInvoice that's not yet final on FreighAi (PAID /
- * CANCELLED) and either never synced or stale.
+ * Manual sync of cached FreighAi status fields on every SUBMITTED
+ * WmsBillingInvoice that's not yet final (PAID / CANCELLED) and isn't
+ * fresh enough.
  *
- * Per-tenant: iterates all tenant DBs (via TenantDatabaseMappingRepository),
- * sets TenantContext, and runs the refresh loop. The sync uses a
- * service-account JWT — TODO Phase 10 will plumb a real one; for now this
- * cron is a no-op when no service-account auth is configured (logged at
- * INFO so admin sees it). Manual /sync endpoint on the controller works
- * with admin JWT in the meantime.
+ * Phase F #2 — replaced the hourly cron with this manual variant. The
+ * frontend calls `POST /api/v1/wms-invoices/sync-all` on list mount and
+ * via the "Refresh" button, passing the user's JWT so per-tenant scoping
+ * works without needing a service-account credential.
  */
 @Service
 class WmsInvoiceSyncService(
     private val invoiceRepository: WmsBillingInvoiceRepository,
-    private val tenantDatabaseMappingRepository: TenantDatabaseMappingRepository,
     private val freighAiInvoiceClient: FreighAiInvoiceClient
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
-    /** How stale "stale" means — anything older than this gets refreshed. */
-    private val staleThreshold: Duration = Duration.ofHours(1)
-
-    @Value("\${app.external-api.freighai.service-account-jwt:}")
-    private lateinit var serviceAccountJwt: String
-
     /**
-     * Hourly cron. Top-of-hour. Skips entirely when no service-account JWT
-     * is configured (early bootstrap before Phase 10 wires it in).
+     * Refresh every SUBMITTED invoice in the current tenant DB whose
+     * `freighaiStatus` is not in a final state. Returns counts so the
+     * caller can render a friendly toast.
      */
-    @Scheduled(cron = "0 0 * * * *")
-    fun hourlySync() {
-        if (serviceAccountJwt.isBlank()) {
-            logger.info("WmsInvoiceSyncService: no service-account JWT configured; skipping hourly sync")
-            return
-        }
-        val tenants = tenantDatabaseMappingRepository.findAll()
-        logger.info("WmsInvoiceSyncService: starting hourly sync across {} tenants", tenants.size)
-        for (tenant in tenants) {
-            try {
-                TenantContext.setCurrentTenant(tenant.clientId.toString())
-                syncOneTenant()
-            } catch (e: Exception) {
-                logger.error("WmsInvoiceSyncService: tenant {} sync failed", tenant.clientId, e)
-            } finally {
-                TenantContext.clear()
-            }
-        }
-    }
+    fun syncAllForCurrentTenant(authToken: String): SyncAllOutcome {
+        val targets = invoiceRepository.findActiveSubmittedInvoices()
+        if (targets.isEmpty()) return SyncAllOutcome(0, 0, 0)
 
-    private fun syncOneTenant() {
-        val staleBefore = Instant.now().minus(staleThreshold)
-        val targets = invoiceRepository.findStaleSubmittedInvoices(staleBefore)
-        if (targets.isEmpty()) return
-        logger.info("WmsInvoiceSyncService: refreshing {} stale invoice(s)", targets.size)
-
+        var refreshed = 0
+        var unchanged = 0
+        var failed = 0
         for (inv in targets) {
             val freighaiInvoiceId = inv.freighaiInvoiceId ?: continue
             try {
-                val freighai = freighAiInvoiceClient.getInvoice(freighaiInvoiceId, serviceAccountJwt)
-                if (freighai == null) continue
+                val freighai = freighAiInvoiceClient.getInvoice(freighaiInvoiceId, authToken)
+                if (freighai == null) { failed++; continue }
+                val changed = inv.freighaiStatus != freighai.currentStatus
+                    || inv.freighaiInvoiceDate != freighai.invoiceDate
+                    || inv.freighaiDueDate != freighai.dueDate
+                    || inv.freighaiOutstandingAmount != freighai.outstandingAmount
                 invoiceRepository.save(
                     inv.copy(
                         freighaiStatus = freighai.currentStatus,
@@ -80,9 +52,21 @@ class WmsInvoiceSyncService(
                         lastSyncedAt = Instant.now()
                     )
                 )
+                if (changed) refreshed++ else unchanged++
             } catch (e: Exception) {
-                logger.warn("WmsInvoiceSyncService: refresh failed for invoice {}", inv.billingInvoiceId, e)
+                logger.warn("syncAll: refresh failed for invoice {}", inv.billingInvoiceId, e)
+                failed++
             }
         }
+        logger.info("syncAll: refreshed={} unchanged={} failed={} total={}", refreshed, unchanged, failed, targets.size)
+        return SyncAllOutcome(refreshed = refreshed, unchanged = unchanged, failed = failed)
     }
+}
+
+data class SyncAllOutcome(
+    val refreshed: Int,
+    val unchanged: Int,
+    val failed: Int
+) {
+    val total: Int get() = refreshed + unchanged + failed
 }
