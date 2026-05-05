@@ -708,17 +708,21 @@ class BillingRunService(
                     )
                 } else {
                     // Pure flat-fee customer — no real storage and no per-CBM-d
-                    // rate configured. Emit a single line with the minimum as a
-                    // monthly charge (Phase F #16 shape preserved).
+                    // rate configured. Emit a single line carrying just the
+                    // minimum amount; toFreighAiLineItems re-shapes this to
+                    // 1 month × amount on the FreighAi boundary so the math
+                    // ties out for the customer-facing PDF. Description is
+                    // unified with the other branches so flat-fee invoices
+                    // are visually indistinguishable from rate-based ones.
                     storageLines += StorageLine(
                         projectCode = null,
-                        projectLabel = "Monthly storage charge",
+                        projectLabel = defaultLabel,
                         cbmDays = BigDecimal.ZERO,
                         ratePerDay = BigDecimal.ZERO,
                         amount = gap,
                         vatPercent = storageCt.vatPercent,
                         vatAmount = newVat,
-                        description = "Monthly storage – ${formatMonth(billingMonth)}",
+                        description = "${storageCt.label} – ${formatMonth(billingMonth)}",
                         freighaiChargeTypeId = storageChargeTypeId
                     )
                 }
