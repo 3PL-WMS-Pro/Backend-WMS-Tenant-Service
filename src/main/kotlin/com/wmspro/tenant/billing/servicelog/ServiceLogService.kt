@@ -2,7 +2,11 @@ package com.wmspro.tenant.billing.servicelog
 
 import com.wmspro.tenant.billing.profile.CustomerBillingProfile
 import com.wmspro.tenant.billing.profile.CustomerBillingProfileRepository
+import org.bson.Document
 import org.slf4j.LoggerFactory
+import org.springframework.data.mongodb.core.MongoTemplate
+import org.springframework.data.mongodb.core.query.Criteria
+import org.springframework.data.mongodb.core.query.Query
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.Instant
@@ -30,7 +34,8 @@ import java.util.UUID
 @Service
 class ServiceLogService(
     private val repository: ServiceLogRepository,
-    private val billingProfileRepository: CustomerBillingProfileRepository
+    private val billingProfileRepository: CustomerBillingProfileRepository,
+    private val mongoTemplate: MongoTemplate
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -49,10 +54,16 @@ class ServiceLogService(
         validatePerformedAt(request.performedAt)
         val profile = requireProfileWithActiveService(request.customerId, request.serviceCode)
 
+        // Phase G: denormalise the parent GRN/GIN's projectCode onto the
+        // log so the billing engine can route it to the right per-project
+        // invoice without an extra lookup per log at billing time.
+        val projectCode = lookupAttachedProjectCode(request.attachedTo.type, request.attachedTo.id)
+
         val now = Instant.now()
         val entity = ServiceLog(
             serviceLogId = "svclog_${UUID.randomUUID().toString().replace("-", "").take(16)}",
             customerId = request.customerId,
+            projectCode = projectCode,
             serviceCode = request.serviceCode,
             quantity = request.quantity,
             customRatePerUnit = request.customRatePerUnit,
@@ -125,6 +136,30 @@ class ServiceLogService(
     private fun validatePerformedAt(performedAt: LocalDate) {
         if (performedAt.isAfter(LocalDate.now())) {
             throw IllegalArgumentException("performedAt cannot be in the future")
+        }
+    }
+
+    /**
+     * Phase G — fetch the projectCode of the attached GRN/GIN. Direct
+     * Mongo read (same tenant DB hosts both collections), no HTTP hop.
+     * Returns null if the record can't be found or the field is blank —
+     * service log lands in the "default" bucket invoice in those cases.
+     */
+    private fun lookupAttachedProjectCode(type: AttachedType, id: String): String? {
+        val collection = when (type) {
+            AttachedType.GRN -> "receiving_records"
+            AttachedType.GIN -> "order_fulfillment_requests"
+        }
+        return try {
+            val doc = mongoTemplate.findOne(
+                Query(Criteria.where("_id").`is`(id)),
+                Document::class.java,
+                collection
+            )
+            (doc?.get("projectCode") as? String)?.takeIf { it.isNotBlank() }
+        } catch (e: Exception) {
+            logger.warn("ServiceLogService: projectCode lookup failed for {}/{} — defaulting to null", type, id, e)
+            null
         }
     }
 

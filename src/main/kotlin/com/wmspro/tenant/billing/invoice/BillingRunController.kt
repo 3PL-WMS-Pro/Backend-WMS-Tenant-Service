@@ -60,17 +60,25 @@ class BillingRunController(
         }
     }
 
+    /**
+     * Phase G — `generate` for a single customer can now produce multiple
+     * invoices (one per project, plus optional "default" bucket). Response
+     * is a list of all SUBMITTED invoices created for the run.
+     */
     @PostMapping("/generate")
     fun generate(
         @Valid @RequestBody request: GenerateBillingRunRequest,
         httpRequest: HttpServletRequest
-    ): ResponseEntity<ApiResponse<WmsBillingInvoiceResponse>> {
+    ): ResponseEntity<ApiResponse<List<WmsBillingInvoiceResponse>>> {
         val authToken = httpRequest.getHeader(HttpHeaders.AUTHORIZATION).orEmpty()
         val userEmail = httpRequest.getHeader("X-User-Email") ?: "unknown"
         return try {
             val saved = service.generate(request.customerId, request.billingMonth, userEmail, authToken)
             ResponseEntity.status(HttpStatus.CREATED).body(
-                ApiResponse.success(saved.toResponse(), "Billing run submitted")
+                ApiResponse.success(
+                    saved.map { it.toResponse() },
+                    "Billing run submitted: ${saved.size} invoice(s)"
+                )
             )
         } catch (e: IllegalStateException) {
             logger.warn("generate refused: {}", e.message)
@@ -186,6 +194,7 @@ internal fun WmsBillingInvoice.toResponse() = WmsBillingInvoiceResponse(
     billingInvoiceId = billingInvoiceId,
     customerId = customerId,
     billingMonth = billingMonth,
+    projectCode = projectCode,
     status = status,
     storageLines = storageLines,
     movementLines = movementLines,

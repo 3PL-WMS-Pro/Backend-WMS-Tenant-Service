@@ -8,7 +8,23 @@ import java.time.Instant
 @Repository
 interface WmsBillingInvoiceRepository : MongoRepository<WmsBillingInvoice, String> {
 
-    fun findByCustomerIdAndBillingMonth(customerId: Long, billingMonth: String): WmsBillingInvoice?
+    /**
+     * Phase G — `(customer, month)` may now span multiple invoices (one per
+     * project plus optional default). Returns the full list. Callers that
+     * previously used the single-result `findByCustomerIdAndBillingMonth`
+     * should use this together with the (customer, project, month) lookup
+     * for idempotency.
+     */
+    fun findAllByCustomerIdAndBillingMonth(customerId: Long, billingMonth: String): List<WmsBillingInvoice>
+
+    /**
+     * Phase G idempotency lookup. `projectCode` may be null (default bucket).
+     */
+    fun findByCustomerIdAndProjectCodeAndBillingMonth(
+        customerId: Long,
+        projectCode: String?,
+        billingMonth: String
+    ): WmsBillingInvoice?
 
     fun findByFreighaiInvoiceId(freighaiInvoiceId: String): WmsBillingInvoice?
 

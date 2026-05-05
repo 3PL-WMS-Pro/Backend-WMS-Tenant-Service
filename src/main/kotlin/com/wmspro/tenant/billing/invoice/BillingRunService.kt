@@ -101,13 +101,17 @@ class BillingRunService(
 
     fun preview(customerId: Long, billingMonth: String, authToken: String): BillingPreviewResponse {
         val ym = YearMonth.parse(billingMonth)
-        val existing = invoiceRepository.findByCustomerIdAndBillingMonth(customerId, billingMonth)
-        val alreadyGenerated = existing != null && existing.status in setOf(
-            BillingInvoiceStatus.SUBMITTED, BillingInvoiceStatus.DRAFT
-        )
+        // Phase G: a (customer, month) may now span multiple invoices (one per
+        // project). "Already generated" if ANY invoice for this customer/month
+        // is in SUBMITTED or DRAFT — preview surfaces the first such for ID.
+        val existingList = invoiceRepository.findAllByCustomerIdAndBillingMonth(customerId, billingMonth)
+        val firstActive = existingList.firstOrNull {
+            it.status == BillingInvoiceStatus.SUBMITTED || it.status == BillingInvoiceStatus.DRAFT
+        }
+        val alreadyGenerated = firstActive != null
 
         val context = buildContext(customerId, ym, authToken, dryRun = true)
-            ?: return emptyPreview(customerId, billingMonth, alreadyGenerated, existing?.billingInvoiceId,
+            ?: return emptyPreview(customerId, billingMonth, alreadyGenerated, firstActive?.billingInvoiceId,
                 blocker = "No active billing profile for customer $customerId")
 
         return BillingPreviewResponse(
@@ -123,7 +127,7 @@ class BillingRunService(
             dataQualityWarnings = context.warnings,
             canGenerate = !alreadyGenerated && context.warnings.none { it.severity == WarningSeverity.BLOCKER },
             alreadyGenerated = alreadyGenerated,
-            existingInvoiceId = existing?.billingInvoiceId
+            existingInvoiceId = firstActive?.billingInvoiceId
         )
     }
 
@@ -131,38 +135,23 @@ class BillingRunService(
     // Generate
     // ──────────────────────────────────────────────────────────────────
 
-    @Transactional
+    /**
+     * Phase G — emits one invoice per project bucket for a (customer, month).
+     * Customers with no projects → 1 default invoice. Customers with N
+     * projects + optional untagged activity → up to N+1 invoices. Each per-
+     * project invoice is independently locked, posted to FreighAi, and saved.
+     *
+     * Idempotency is per (customerId, projectCode, billingMonth). Re-running
+     * with new project tags creates additional invoices without disturbing
+     * already-SUBMITTED ones.
+     */
     fun generate(
         customerId: Long,
         billingMonth: String,
         triggeredBy: String,
         authToken: String
-    ): WmsBillingInvoice {
+    ): List<WmsBillingInvoice> {
         val ym = YearMonth.parse(billingMonth)
-        // Idempotency layer 1: existing WmsBillingInvoice in non-final state.
-        invoiceRepository.findByCustomerIdAndBillingMonth(customerId, billingMonth)?.let { existing ->
-            if (existing.status == BillingInvoiceStatus.SUBMITTED) {
-                logger.info("generate: idempotent return for ({}, {}) → {}", customerId, billingMonth, existing.billingInvoiceId)
-                return existing
-            }
-            if (existing.status == BillingInvoiceStatus.DRAFT) {
-                throw IllegalStateException(
-                    "WmsBillingInvoice ${existing.billingInvoiceId} is mid-flight (DRAFT). " +
-                    "Wait for the in-flight run or cancel it before retrying."
-                )
-            }
-            // SUBMISSION_FAILED with FreighAi IDs → ambiguous, surface for admin
-            if (existing.status == BillingInvoiceStatus.SUBMISSION_FAILED && existing.freighaiInvoiceId != null) {
-                throw IllegalStateException(
-                    "Previous attempt for ($customerId, $billingMonth) created FreighAi invoice " +
-                    "${existing.freighaiInvoiceId} but cascade failed. Review and cancel via " +
-                    "billing-runs/cancel/${existing.billingInvoiceId} before regenerating."
-                )
-            }
-            // SUBMISSION_FAILED without FreighAi binding, or CANCELLED → safe to overwrite
-            invoiceRepository.deleteById(existing.billingInvoiceId)
-        }
-
         val context = buildContext(customerId, ym, authToken, dryRun = false)
             ?: throw IllegalStateException("No active billing profile for customer $customerId")
 
@@ -178,26 +167,122 @@ class BillingRunService(
             )
         }
 
+        // Determine the set of project buckets to emit invoices for. Union of
+        // distinct projectCodes across all line types — null is the "default"
+        // bucket and gets its own invoice when there's any untagged activity.
+        val projectCodes: Set<String?> =
+            context.storageLines.map { it.projectCode }.toSet() +
+            context.movementLines.map { it.projectCode }.toSet() +
+            context.serviceLines.map { it.projectCode }.toSet()
+
+        // Sort for deterministic output: null (default) first, then projects
+        // A→Z. Project codes match `^[A-Z][A-Z0-9_]*$` so empty-string sorts
+        // before any of them lexicographically.
+        val ordered = projectCodes.sortedBy { it ?: "" }
+
+        val results = mutableListOf<WmsBillingInvoice>()
+        for (projectCode in ordered) {
+            val invoice = generateForOneProject(
+                customerId = customerId,
+                projectCode = projectCode,
+                billingMonth = billingMonth,
+                triggeredBy = triggeredBy,
+                authToken = authToken,
+                fullContext = context
+            )
+            if (invoice != null) results += invoice
+        }
+
+        if (results.isEmpty()) {
+            throw IllegalStateException(
+                "No billable activity for customer $customerId in $billingMonth — nothing to invoice."
+            )
+        }
+        return results
+    }
+
+    /**
+     * Phase G — generate exactly one per-project invoice. Returns null when
+     * the slice is empty (no lines for this project). Throws on hard
+     * failures (lock cascade, FreighAi rejection, etc.); other projects in
+     * the parent loop continue.
+     */
+    @Transactional
+    private fun generateForOneProject(
+        customerId: Long,
+        projectCode: String?,
+        billingMonth: String,
+        triggeredBy: String,
+        authToken: String,
+        fullContext: BillingContext
+    ): WmsBillingInvoice? {
+        // Slice the full context down to just this project's lines.
+        val sliceStorage = fullContext.storageLines.filter { it.projectCode == projectCode }
+        val sliceMovement = fullContext.movementLines.filter { it.projectCode == projectCode }
+        val sliceService = fullContext.serviceLines.filter { it.projectCode == projectCode }
+        if (sliceStorage.isEmpty() && sliceMovement.isEmpty() && sliceService.isEmpty()) return null
+
+        val subtotal = (sliceStorage.sumOf { it.amount }
+            + sliceMovement.sumOf { it.amount }
+            + sliceService.sumOf { it.amount }).setScale(2, RoundingMode.HALF_UP)
+        val totalVat = (sliceStorage.sumOf { it.vatAmount }
+            + sliceMovement.sumOf { it.vatAmount }
+            + sliceService.sumOf { it.vatAmount }).setScale(2, RoundingMode.HALF_UP)
+        val grandTotal = subtotal.add(totalVat).setScale(2, RoundingMode.HALF_UP)
+        // The minimum top-up line lives on the default bucket (projectCode=null)
+        // because the minimum is a customer-level concept; carry forward only
+        // when present.
+        val sliceMinimumApplied = sliceStorage.firstOrNull { it.isMinimumTopUp }?.amount
+
+        // Resolve a human-readable project label from any line that carries it
+        // (storage and movement lines do; services don't track it).
+        val projectLabel = sliceStorage.firstOrNull { it.projectLabel != null }?.projectLabel
+            ?: sliceMovement.firstOrNull { it.projectLabel != null }?.projectLabel
+
+        // Idempotency: per (customer, project, month).
+        invoiceRepository.findByCustomerIdAndProjectCodeAndBillingMonth(customerId, projectCode, billingMonth)?.let { existing ->
+            if (existing.status == BillingInvoiceStatus.SUBMITTED) {
+                logger.info(
+                    "generate: idempotent return for ({}, {}, {}) → {}",
+                    customerId, projectCode ?: "default", billingMonth, existing.billingInvoiceId
+                )
+                return existing
+            }
+            if (existing.status == BillingInvoiceStatus.DRAFT) {
+                throw IllegalStateException(
+                    "WmsBillingInvoice ${existing.billingInvoiceId} (${projectCode ?: "default"}) is mid-flight. " +
+                    "Wait for the in-flight run or cancel it before retrying."
+                )
+            }
+            if (existing.status == BillingInvoiceStatus.SUBMISSION_FAILED && existing.freighaiInvoiceId != null) {
+                throw IllegalStateException(
+                    "Previous attempt for ($customerId, ${projectCode ?: "default"}, $billingMonth) created " +
+                    "FreighAi invoice ${existing.freighaiInvoiceId} but cascade failed. Cancel via " +
+                    "billing-runs/cancel/${existing.billingInvoiceId} before regenerating."
+                )
+            }
+            // CANCELLED or SUBMISSION_FAILED without FreighAi binding → safe to overwrite.
+            invoiceRepository.deleteById(existing.billingInvoiceId)
+        }
+
         val billingInvoiceId = "wmsinv_${UUID.randomUUID().toString().replace("-", "").take(16)}"
-        val referenceNo = "WMS-$customerId-$billingMonth"
+        val referenceNo = "WMS-$customerId-${projectCode ?: "default"}-$billingMonth"
 
         // Pre-create DRAFT row.
-        // Phase F #7: no "in flight" placeholder — submissionAttempts only
-        // records real outcomes (success or failure), keeping the audit
-        // trail honest. The DRAFT status itself signals "in progress".
         val now = Instant.now()
         var draft = WmsBillingInvoice(
             billingInvoiceId = billingInvoiceId,
             customerId = customerId,
+            projectCode = projectCode,
             billingMonth = billingMonth,
             status = BillingInvoiceStatus.DRAFT,
-            storageLines = context.storageLines,
-            movementLines = context.movementLines,
-            serviceLines = context.serviceLines,
-            subtotal = context.subtotal,
-            totalVat = context.totalVat,
-            grandTotal = context.grandTotal,
-            minimumChargeApplied = context.minimumChargeApplied,
+            storageLines = sliceStorage,
+            movementLines = sliceMovement,
+            serviceLines = sliceService,
+            subtotal = subtotal,
+            totalVat = totalVat,
+            grandTotal = grandTotal,
+            minimumChargeApplied = sliceMinimumApplied,
             freighaiReferenceNo = referenceNo,
             generatedAt = now,
             generatedBy = triggeredBy,
@@ -205,12 +290,12 @@ class BillingRunService(
         )
         draft = invoiceRepository.save(draft)
 
-        // Lock cascade.
-        val grnIds = context.movementLines.filter { it.direction == MovementDirection.INBOUND }
+        // Lock cascade — only this slice's GRN/GIN/ServiceLog IDs.
+        val grnIds = sliceMovement.filter { it.direction == MovementDirection.INBOUND }
             .flatMap { it.sourceRecordIds }.distinct()
-        val ginIds = context.movementLines.filter { it.direction == MovementDirection.OUTBOUND }
+        val ginIds = sliceMovement.filter { it.direction == MovementDirection.OUTBOUND }
             .flatMap { it.sourceRecordIds }.distinct()
-        val serviceLogIds = context.serviceLines.flatMap { it.serviceLogIds }.distinct()
+        val serviceLogIds = sliceService.flatMap { it.serviceLogIds }.distinct()
 
         val cascadeOutcome = cascadeClient.setLocks(
             billingInvoiceId = billingInvoiceId,
@@ -221,9 +306,8 @@ class BillingRunService(
             authToken = authToken
         )
         if (!cascadeOutcome.isAllSuccess()) {
-            // Roll back any locks that did succeed.
             cascadeClient.clearLocks(grnIds, ginIds, serviceLogIds, authToken)
-            val failed = invoiceRepository.save(
+            invoiceRepository.save(
                 draft.copy(
                     status = BillingInvoiceStatus.SUBMISSION_FAILED,
                     submissionAttempts = draft.submissionAttempts + SubmissionAttempt(
@@ -233,31 +317,32 @@ class BillingRunService(
                     )
                 )
             )
-            throw IllegalStateException("Lock cascade failed (${cascadeOutcome.summary()}); marked as SUBMISSION_FAILED.")
+            throw IllegalStateException(
+                "Lock cascade failed for ${projectCode ?: "default"} (${cascadeOutcome.summary()}); marked as SUBMISSION_FAILED."
+            )
         }
 
-        // FreighAi idempotency layer 2.
-        val existingFreighai = freighAiInvoiceClient.findInvoiceByReferenceNo(referenceNo, authToken)
+        // Slice context for FreighAi line item generation + cost snapshot writes.
+        val sliceContext = fullContext.copy(
+            storageLines = sliceStorage,
+            movementLines = sliceMovement,
+            serviceLines = sliceService,
+            subtotal = subtotal,
+            totalVat = totalVat,
+            grandTotal = grandTotal,
+            minimumChargeApplied = sliceMinimumApplied
+        )
 
+        val existingFreighai = freighAiInvoiceClient.findInvoiceByReferenceNo(referenceNo, authToken)
         val freighaiInvoiceId: String
         val freighaiInvoiceNo: String
         val freighaiVoucherId: String?
-        // Phase F #3: capture FreighAi state at submit time so the WMS list
-        // shows a real status immediately, without waiting on the manual sync.
         var freighaiStatusAtSubmit: String? = null
         var freighaiInvoiceDateAtSubmit: LocalDate? = null
         var freighaiDueDateAtSubmit: LocalDate? = null
         var freighaiOutstandingAtSubmit: java.math.BigDecimal? = null
 
         if (existingFreighai != null) {
-            // Audit fix (Finding 1): refuse to adopt a CANCELLED FreighAi invoice.
-            // Adopting a cancelled invoice would lock GRN/GIN/ServiceLog rows to a
-            // dead FreighAi record that can never accept payments or further state
-            // transitions. Admin must explicitly resolve before regenerating —
-            // typically by cancelling our (still non-existent) WMS run, then
-            // re-running which will pass the idempotency check and create a fresh
-            // FreighAi invoice (because there's no live invoice with this
-            // referenceNo any more).
             if (existingFreighai.currentStatus?.equals("CANCELLED", ignoreCase = true) == true) {
                 cascadeClient.clearLocks(grnIds, ginIds, serviceLogIds, authToken)
                 invoiceRepository.save(
@@ -272,9 +357,7 @@ class BillingRunService(
                 )
                 throw IllegalStateException(
                     "FreighAi invoice ${existingFreighai.invoiceId} (${existingFreighai.invoiceNo}) " +
-                    "for referenceNo=$referenceNo is in CANCELLED state. Cannot adopt a cancelled invoice. " +
-                    "If the customer intentionally cancelled this billing month, leave it as-is. If you want " +
-                    "to regenerate, manually delete the FreighAi invoice's referenceNo or use a different one."
+                    "for referenceNo=$referenceNo is in CANCELLED state. Cannot adopt a cancelled invoice."
                 )
             }
             logger.warn(
@@ -301,13 +384,22 @@ class BillingRunService(
                     throw IllegalStateException("No FreighAi customerId mapping for customerId=$customerId")
                 }
 
+            // Phase G: narration carries the project so the FreighAi invoice
+            // header surfaces it without WMS-side context.
+            val narration = if (projectCode != null) {
+                val labelOrCode = projectLabel ?: projectCode
+                "WMS charges for project $labelOrCode — $billingMonth"
+            } else {
+                "WMS charges (default) — $billingMonth"
+            }
+
             val request = CreateFreighAiInvoiceRequest(
                 invoiceDate = LocalDate.now(),
                 partyId = freighaiCustomerId,
                 currencyId = aedCurrencyId,
                 referenceNo = referenceNo,
-                narration = "WMS storage / movement / service charges for $billingMonth",
-                lineItems = context.toFreighAiLineItems()
+                narration = narration,
+                lineItems = sliceContext.toFreighAiLineItems()
             )
             when (val result = freighAiInvoiceClient.createInvoice(request, authToken)) {
                 is InvoiceCreationResult.Success -> {
@@ -321,7 +413,7 @@ class BillingRunService(
                 }
                 is InvoiceCreationResult.Failure -> {
                     cascadeClient.clearLocks(grnIds, ginIds, serviceLogIds, authToken)
-                    val failed = invoiceRepository.save(draft.copy(
+                    invoiceRepository.save(draft.copy(
                         status = BillingInvoiceStatus.SUBMISSION_FAILED,
                         submissionAttempts = draft.submissionAttempts + SubmissionAttempt(
                             attemptedAt = Instant.now(),
@@ -340,8 +432,6 @@ class BillingRunService(
                 freighaiInvoiceId = freighaiInvoiceId,
                 freighaiInvoiceNo = freighaiInvoiceNo,
                 freighaiVoucherId = freighaiVoucherId,
-                // Phase F #3: capture FreighAi state at submit so the WMS
-                // list page shows real status without waiting on /sync-all.
                 freighaiStatus = freighaiStatusAtSubmit,
                 freighaiInvoiceDate = freighaiInvoiceDateAtSubmit,
                 freighaiDueDate = freighaiDueDateAtSubmit,
@@ -355,16 +445,12 @@ class BillingRunService(
             )
         )
         logger.info(
-            "BillingRun SUBMITTED: customerId={} month={} → freighaiInvoiceNo={} grandTotal={}",
-            customerId, billingMonth, saved.freighaiInvoiceNo, saved.grandTotal
+            "BillingRun SUBMITTED: customerId={} project={} month={} → freighaiInvoiceNo={} grandTotal={}",
+            customerId, projectCode ?: "default", billingMonth, saved.freighaiInvoiceNo, saved.grandTotal
         )
 
-        // Phase B: write cost snapshots after invoice save. Failures here are
-        // logged but don't fail the run — snapshots are non-critical metadata
-        // that the reconciliation report consumes; the customer-facing invoice
-        // and FreighAi submission are unaffected if snapshot writes fail.
         try {
-            writeCostSnapshots(saved.billingInvoiceId, customerId, billingMonth, context)
+            writeCostSnapshots(saved.billingInvoiceId, customerId, billingMonth, sliceContext)
         } catch (e: Exception) {
             logger.error("Cost snapshot write failed for invoice {} — continuing", saved.billingInvoiceId, e)
         }
@@ -565,7 +651,10 @@ class BillingRunService(
                     amount = amount,
                     vatPercent = storageCt.vatPercent,
                     vatAmount = vatAmt,
-                    description = "Storage – ${projectLabel ?: "Unassigned"} – ${formatMonth(billingMonth)}",
+                    // Phase G: drop project from line description — the invoice
+                    // header carries the project. Use the FreighAi ChargeType
+                    // label as the prefix so admin-side label edits propagate.
+                    description = "${storageCt.label} – ${formatMonth(billingMonth)}",
                     freighaiChargeTypeId = storageChargeTypeId
                 )
                 storageSubtotal = storageSubtotal.add(amount)
@@ -640,7 +729,8 @@ class BillingRunService(
                     amount = amount,
                     vatPercent = inboundCt.vatPercent,
                     vatAmount = vatAmt,
-                    description = "Inbound movement – ${projectLabel ?: "Unassigned"} – ${formatMonth(billingMonth)}",
+                    // Phase G: ChargeType label as prefix.
+                    description = "${inboundCt.label} – ${formatMonth(billingMonth)}",
                     freighaiChargeTypeId = inboundChargeTypeId,
                     sourceRecordIds = bucket.sourceRecordIds.toList()
                 )
@@ -669,7 +759,8 @@ class BillingRunService(
                     amount = amount,
                     vatPercent = outboundCt.vatPercent,
                     vatAmount = vatAmt,
-                    description = "Outbound movement – ${projectLabel ?: "Unassigned"} – ${formatMonth(billingMonth)}",
+                    // Phase G: ChargeType label as prefix.
+                    description = "${outboundCt.label} – ${formatMonth(billingMonth)}",
                     freighaiChargeTypeId = outboundChargeTypeId,
                     sourceRecordIds = bucket.sourceRecordIds.toList()
                 )
@@ -690,7 +781,11 @@ class BillingRunService(
         var catalogByCode: Map<String, ServiceCatalog> = emptyMap()
         if (aggregated.isNotEmpty()) {
             catalogByCode = catalogRepository.findAll().associateBy { it.serviceCode }
-            for ((serviceCode, agg) in aggregated) {
+            // Phase G: aggregator now keys by (serviceCode, projectCode) so
+            // each per-project invoice slices to its own service lines.
+            for ((key, agg) in aggregated) {
+                val serviceCode = key.serviceCode
+                val projectCode = key.projectCode
                 val sub = profile.serviceSubscriptions.firstOrNull { it.serviceCode == serviceCode }
                 val cat = catalogByCode[serviceCode]
                 if (sub == null || !sub.isActive) {
@@ -740,7 +835,8 @@ class BillingRunService(
                     vatAmount = vatAmt,
                     description = "${cat.label} – ${formatMonth(billingMonth)}",
                     freighaiChargeTypeId = cat.freighaiChargeTypeId,
-                    serviceLogIds = agg.serviceLogIds
+                    serviceLogIds = agg.serviceLogIds,
+                    projectCode = projectCode
                 )
             }
         }
@@ -893,7 +989,10 @@ class BillingRunService(
 
         // Service — one snapshot per ServiceLog within each ServiceLine.
         for (line in context.serviceLines) {
-            val agg = context.serviceAggregated[line.serviceCode] ?: continue
+            // Phase G: aggregator keyed by (serviceCode, projectCode).
+            val agg = context.serviceAggregated[
+                com.wmspro.tenant.billing.invoice.aggregator.ServiceLineKey(line.serviceCode, line.projectCode)
+            ] ?: continue
             val cat = context.catalogByCode[line.serviceCode] ?: continue
             val baseCost = cat.standardCostPerUnit
             val sub = context.profile.serviceSubscriptions.firstOrNull { it.serviceCode == line.serviceCode }
@@ -1045,7 +1144,7 @@ private data class BillingContext(
     val occupancyResult: OccupancyResult? = null,
     val inboundResult: InboundMovementResult? = null,
     val outboundResult: OutboundMovementResult? = null,
-    val serviceAggregated: Map<String, AggregatedServiceLine> = emptyMap(),
+    val serviceAggregated: Map<com.wmspro.tenant.billing.invoice.aggregator.ServiceLineKey, AggregatedServiceLine> = emptyMap(),
     val catalogByCode: Map<String, ServiceCatalog> = emptyMap(),
     /** Phase B: tenant cost defaults snapshotted at build time. */
     val tenantCostDefaults: TenantOperationalCosts? = null

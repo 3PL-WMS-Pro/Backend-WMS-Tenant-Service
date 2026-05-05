@@ -85,6 +85,8 @@ data class WmsBillingInvoiceResponse(
     val billingInvoiceId: String,
     val customerId: Long,
     val billingMonth: String,
+    /** Phase G — project bucket this invoice covers; null = default bucket. */
+    val projectCode: String?,
     val status: BillingInvoiceStatus,
     val storageLines: List<StorageLine>,
     val movementLines: List<MovementLine>,

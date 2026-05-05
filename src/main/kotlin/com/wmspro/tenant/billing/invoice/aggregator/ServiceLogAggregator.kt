@@ -6,27 +6,29 @@ import java.math.BigDecimal
 import java.time.YearMonth
 
 /**
- * Aggregates unbilled ServiceLog entries per `serviceCode` for a given
- * (customer, month). Returns one [AggregatedServiceLine] per serviceCode,
- * exposing both the total quantity and the per-log entries (with their
- * optional rate overrides). The invoice line builder folds the entries
- * into a single line per service code, computing a blended effective rate
- * so that `qty × ratePerUnit ≈ amount` on the invoice while still
- * respecting each log's override for the underlying subtotal math.
+ * Aggregates unbilled ServiceLog entries per (serviceCode, projectCode)
+ * for a given (customer, month). Phase G: returns one
+ * [AggregatedServiceLine] per (serviceCode, projectCode) pair so the
+ * billing engine can slice them into per-project invoices. The invoice
+ * line builder folds the entries into a single line per pair, computing
+ * a blended effective rate so that `qty × ratePerUnit ≈ amount` while
+ * still respecting each log's override for the underlying subtotal math.
  */
 @Component
 class ServiceLogAggregator(
     private val repository: ServiceLogRepository
 ) {
-    fun aggregate(customerId: Long, billingMonth: YearMonth): Map<String, AggregatedServiceLine> {
+    fun aggregate(customerId: Long, billingMonth: YearMonth): Map<ServiceLineKey, AggregatedServiceLine> {
         val from = billingMonth.atDay(1)
         val to = billingMonth.atEndOfMonth()
         val logs = repository.findUnbilledByCustomerAndDateRange(customerId, from, to)
         if (logs.isEmpty()) return emptyMap()
 
-        val byService = logs.groupBy { it.serviceCode }
-        return byService.mapValues { (_, group) ->
+        val byKey = logs.groupBy { ServiceLineKey(it.serviceCode, it.projectCode) }
+        return byKey.mapValues { (_, group) ->
             AggregatedServiceLine(
+                serviceCode = group.first().serviceCode,
+                projectCode = group.first().projectCode,
                 totalQuantity = group.fold(BigDecimal.ZERO) { acc, log -> acc.add(log.quantity) },
                 entries = group.map { log ->
                     ServiceLogEntry(
@@ -43,15 +45,27 @@ class ServiceLogAggregator(
 }
 
 /**
- * Aggregated rollup for one serviceCode in a (customer, month).
+ * Phase G — composite key: services aggregate per (serviceCode, projectCode)
+ * so each per-project invoice gets only its own service lines. Null
+ * projectCode = default bucket.
+ */
+data class ServiceLineKey(
+    val serviceCode: String,
+    val projectCode: String?
+)
+
+/**
+ * Aggregated rollup for one (serviceCode, projectCode) pair in a (customer, month).
  *
  * `totalQuantity` is the sum of all log quantities; `entries` preserves
  * each log's own quantity + optional rate override so the invoice line
  * builder can compute a per-log subtotal (entry.qty × resolvedRate(entry))
- * and then collapse to a single invoice line per service code with a
- * blended effective rate.
+ * and then collapse to a single invoice line per pair with a blended
+ * effective rate.
  */
 data class AggregatedServiceLine(
+    val serviceCode: String,
+    val projectCode: String?,
     val totalQuantity: BigDecimal,
     val entries: List<ServiceLogEntry>,
     val serviceLogIds: List<String>

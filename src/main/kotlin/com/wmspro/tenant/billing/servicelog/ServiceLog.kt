@@ -36,6 +36,15 @@ data class ServiceLog(
     @Indexed
     val customerId: Long,
 
+    /**
+     * Phase G — denormalised project bucket the parent GRN/GIN belongs
+     * to (looked up at create time from `attachedTo`). Drives which
+     * per-project invoice this log gets billed under. Null = default
+     * bucket (the GRN/GIN had no projectCode tagged).
+     */
+    @Indexed
+    val projectCode: String? = null,
+
     /** FK to [com.wmspro.tenant.billing.catalog.ServiceCatalog.serviceCode]. */
     @Indexed
     val serviceCode: String,

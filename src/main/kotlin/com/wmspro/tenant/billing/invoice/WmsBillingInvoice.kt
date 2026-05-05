@@ -31,7 +31,11 @@ import java.time.LocalDate
  * See WMS-INVOICING-INTEGRATION.md §3.1 and §5 Phase 5.
  */
 @Document(collection = "wms_billing_invoice")
-@CompoundIndex(name = "customer_month_unique_idx", def = "{'customerId': 1, 'billingMonth': 1}", unique = true)
+// Phase G: idempotency is now per (customer, project, month). When a
+// customer has multiple projects, we emit one invoice per project plus
+// one "default" invoice for any project-untagged activity (Option 1).
+// Old `customer_month_unique_idx` was dropped during the Phase G migration.
+@CompoundIndex(name = "customer_project_month_unique_idx", def = "{'customerId': 1, 'projectCode': 1, 'billingMonth': 1}", unique = true)
 @CompoundIndex(name = "sync_target_idx", def = "{'status': 1, 'freighaiStatus': 1, 'lastSyncedAt': 1}")
 data class WmsBillingInvoice(
     @Id
@@ -39,6 +43,15 @@ data class WmsBillingInvoice(
 
     @Indexed
     val customerId: Long,
+
+    /**
+     * Phase G — project bucket this invoice covers. `null` means the
+     * "default" bucket (untagged activity, or customers with no projects
+     * defined). Together with customerId + billingMonth this uniquely
+     * identifies an invoice.
+     */
+    @Indexed
+    val projectCode: String? = null,
 
     /** ISO yearmonth, e.g. "2026-04". */
     @Indexed
@@ -133,7 +146,13 @@ data class ServiceLine(
     val description: String,
     val freighaiChargeTypeId: String,
     /** ServiceLog IDs included in this line — for lock cascade. */
-    val serviceLogIds: List<String> = emptyList()
+    val serviceLogIds: List<String> = emptyList(),
+    /**
+     * Phase G — project bucket this service line belongs to. Null = default
+     * bucket. Each per-project invoice contains only its own project's
+     * service lines.
+     */
+    val projectCode: String? = null
 )
 
 data class SubmissionAttempt(
