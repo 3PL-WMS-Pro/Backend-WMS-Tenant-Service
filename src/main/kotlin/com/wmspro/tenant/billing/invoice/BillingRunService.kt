@@ -229,10 +229,11 @@ class BillingRunService(
             + sliceMovement.sumOf { it.vatAmount }
             + sliceService.sumOf { it.vatAmount }).setScale(2, RoundingMode.HALF_UP)
         val grandTotal = subtotal.add(totalVat).setScale(2, RoundingMode.HALF_UP)
-        // The minimum top-up line lives on the default bucket (projectCode=null)
-        // because the minimum is a customer-level concept; carry forward only
-        // when present.
-        val sliceMinimumApplied = sliceStorage.firstOrNull { it.isMinimumTopUp }?.amount
+        // Phase H: the minimum is a customer-level concept that always lands
+        // on the default-bucket invoice (projectCode=null). Per-project
+        // invoices never inherit it. Pulled directly from the build-time
+        // value rather than re-derived from the (now-collapsed) line.
+        val sliceMinimumApplied = if (projectCode == null) fullContext.minimumChargeApplied else null
 
         // Resolve a human-readable project label from any line that carries it
         // (storage and movement lines do; services don't track it).
@@ -660,7 +661,12 @@ class BillingRunService(
                 storageSubtotal = storageSubtotal.add(amount)
             }
         }
-        // Apply minimum (cascade: profile → tenant default).
+        // Phase H: apply storage minimum by collapsing into a single
+        // bumped-quantity line on the default bucket (projectCode=null) —
+        // no separate "top-up" line. We inflate the quantity (not the
+        // rate) so the customer-visible rate matches the contracted sheet.
+        // The audit trail lives on `WmsBillingInvoice.minimumChargeApplied`,
+        // surfaced only on the WMS admin breakdown surface.
         val effectiveMinimum = profile.defaultMonthlyMinimum ?: tenantDefaults?.defaultMonthlyMinimum
         var minimumApplied: BigDecimal? = null
         if (effectiveMinimum != null
@@ -669,32 +675,45 @@ class BillingRunService(
             && storageChargeTypeId != null) {
             val gap = effectiveMinimum.subtract(storageSubtotal).setScale(2, RoundingMode.HALF_UP)
             if (gap.signum() > 0) {
-                val vatAmt = gap.multiply(storageCt.vatPercent).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
-                // Phase F #16: when there's no real storage activity, the
-                // minimum IS the storage charge — present it as a regular
-                // "Monthly storage" line. When there's partial activity
-                // below the minimum, keep the explicit "top-up" wording so
-                // the customer can see how the floor was applied.
-                val isPureMinimum = storageSubtotal.signum() == 0
-                val description = if (isPureMinimum)
-                    "Monthly storage – ${formatMonth(billingMonth)}"
-                else
-                    "Storage minimum top-up – ${formatMonth(billingMonth)}"
-                val label = if (isPureMinimum) "Monthly storage charge" else "Monthly minimum top-up"
-                storageLines += StorageLine(
-                    projectCode = null,
-                    projectLabel = label,
-                    cbmDays = BigDecimal.ZERO,
-                    ratePerDay = BigDecimal.ZERO,
-                    amount = gap,
-                    vatPercent = storageCt.vatPercent,
-                    vatAmount = vatAmt,
-                    description = description,
-                    freighaiChargeTypeId = storageChargeTypeId,
-                    isMinimumTopUp = true
-                )
-                minimumApplied = gap
-                storageSubtotal = storageSubtotal.add(gap)
+                val (defaultRate, defaultLabel) = resolveStorageRate(profile, null, tenantDefaults)
+                val effectiveDefaultRate = defaultRate ?: BigDecimal.ZERO
+                if (effectiveDefaultRate.signum() == 0) {
+                    warnings += DataQualityWarning(
+                        severity = WarningSeverity.WARNING,
+                        code = "STORAGE_MINIMUM_RATE_MISSING",
+                        message = "Cannot apply storage minimum: no default storage rate resolved on profile or tenant defaults — minimum skipped",
+                        affectedIds = emptyList()
+                    )
+                } else {
+                    val defaultIdx = storageLines.indexOfFirst { it.projectCode == null }
+                    if (defaultIdx >= 0) {
+                        val existing = storageLines[defaultIdx]
+                        val newAmount = existing.amount.add(gap).setScale(2, RoundingMode.HALF_UP)
+                        val newQty = newAmount.divide(existing.ratePerDay, 2, RoundingMode.HALF_UP)
+                        val newVat = newAmount.multiply(storageCt.vatPercent).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
+                        storageLines[defaultIdx] = existing.copy(
+                            cbmDays = newQty,
+                            amount = newAmount,
+                            vatAmount = newVat
+                        )
+                    } else {
+                        val newQty = gap.divide(effectiveDefaultRate, 2, RoundingMode.HALF_UP)
+                        val newVat = gap.multiply(storageCt.vatPercent).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
+                        storageLines += StorageLine(
+                            projectCode = null,
+                            projectLabel = defaultLabel,
+                            cbmDays = newQty,
+                            ratePerDay = effectiveDefaultRate,
+                            amount = gap,
+                            vatPercent = storageCt.vatPercent,
+                            vatAmount = newVat,
+                            description = "${storageCt.label} – ${formatMonth(billingMonth)}",
+                            freighaiChargeTypeId = storageChargeTypeId
+                        )
+                    }
+                    minimumApplied = gap
+                    storageSubtotal = storageSubtotal.add(gap)
+                }
             }
         }
         for (w in occupancy.warnings) {
@@ -1156,28 +1175,13 @@ private data class BillingContext(
         // by chargeTypeId. Groups without a SERVICE keep today's behavior.
         val tagged = mutableListOf<TaggedFreighAiLine>()
         var idx = 0
-        storageLines.filter { !it.isMinimumTopUp }.forEach {
+        storageLines.forEach {
             tagged += TaggedFreighAiLine(
                 item = FreighAiInvoiceLineItem(
                     description = it.description,
                     quantity = it.cbmDays,
                     unit = "CBM-day",
                     unitPrice = it.ratePerDay,
-                    chargeTypeId = it.freighaiChargeTypeId,
-                    vatPercent = it.vatPercent,
-                    vatAmount = it.vatAmount
-                ),
-                source = FreighAiLineSource.STORAGE,
-                originalIndex = idx++
-            )
-        }
-        storageLines.filter { it.isMinimumTopUp }.forEach {
-            tagged += TaggedFreighAiLine(
-                item = FreighAiInvoiceLineItem(
-                    description = it.description,
-                    quantity = BigDecimal.ONE,
-                    unit = "topup",
-                    unitPrice = it.amount,
                     chargeTypeId = it.freighaiChargeTypeId,
                     vatPercent = it.vatPercent,
                     vatAmount = it.vatAmount

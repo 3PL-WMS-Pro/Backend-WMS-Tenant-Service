@@ -77,21 +77,6 @@ class FreighAiLineConsolidatorTest {
     }
 
     @Test
-    fun `storage with minimum top-up no service emits both lines as-is`() {
-        val storage = line("Storage – April 2026", "100", "CBM-day", "0.50", "CHG-00114")
-        val topup = line("Storage minimum top-up – April 2026", "1", "topup", "25.00", "CHG-00114")
-
-        val result = consolidateFreighAiLines(listOf(
-            tag(storage, FreighAiLineSource.STORAGE, 0),
-            tag(topup, FreighAiLineSource.STORAGE, 1)
-        ))
-
-        assertEquals(2, result.size)
-        assertEquals(storage, result[0])
-        assertEquals(topup, result[1])
-    }
-
-    @Test
     fun `multi-project outbound with one service preserves smaller project line and folds service into anchor`() {
         // ProjectA: 5 CBM × 10 = 50 (lower, preserved)
         // ProjectB: 8 CBM × 10 = 80 (higher → anchor, absorbs forklift)
