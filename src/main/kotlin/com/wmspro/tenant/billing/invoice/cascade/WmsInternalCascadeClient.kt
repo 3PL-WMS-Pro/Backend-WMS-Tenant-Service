@@ -41,10 +41,14 @@ class WmsInternalCascadeClient(
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
-    @Value("\${services.inbound-service.url:http://localhost:6011}")
+    // Defaults match the deployed topology:
+    //   - inbound-service runs on :6017 with `server.servlet.context-path: /api`
+    //   - order-service   runs on :6018 with no context-path
+    // Override via SPRING env in non-default deployments.
+    @Value("\${services.inbound-service.url:http://localhost:6017/api}")
     private lateinit var inboundServiceUrl: String
 
-    @Value("\${services.order-service.url:http://localhost:6012}")
+    @Value("\${services.order-service.url:http://localhost:6018}")
     private lateinit var orderServiceUrl: String
 
     /**
@@ -208,13 +212,14 @@ class WmsInternalCascadeClient(
     private fun buildInternalHeaders(authToken: String): HttpHeaders = HttpHeaders().apply {
         contentType = MediaType.APPLICATION_JSON
         accept = listOf(MediaType.APPLICATION_JSON)
-        // Forward the current tenant id so the receiving service binds the
-        // write to the same tenant DB — same convention as the existing
-        // CustomerMasterProxyService.
-        TenantContext.getCurrentTenant()?.let { set("X-Client", it) }
+        // Phase F.1: inbound + order TenantInterceptors only accept
+        // `X-Client-ID` / `X-Tenant-ID` / `X-Tenant-Id`. The previous
+        // `X-Client` header was silently rejected → 401. Use `X-Tenant-Id`
+        // (the same name the frontend sends) so the cascade is consistent
+        // with the rest of the stack.
+        TenantContext.getCurrentTenant()?.let { set("X-Tenant-Id", it) }
         // Phase F: forward the original request's JWT so downstream service
-        // auth filters accept the cascade call. Without this, inbound/order
-        // services return 401 and the lock cascade aborts the billing run.
+        // auth filters accept the cascade call.
         if (authToken.isNotBlank()) {
             set(
                 HttpHeaders.AUTHORIZATION,
