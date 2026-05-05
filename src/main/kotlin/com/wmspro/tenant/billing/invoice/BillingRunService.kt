@@ -677,43 +677,53 @@ class BillingRunService(
             if (gap.signum() > 0) {
                 val (defaultRate, defaultLabel) = resolveStorageRate(profile, null, tenantDefaults)
                 val effectiveDefaultRate = defaultRate ?: BigDecimal.ZERO
-                if (effectiveDefaultRate.signum() == 0) {
-                    warnings += DataQualityWarning(
-                        severity = WarningSeverity.WARNING,
-                        code = "STORAGE_MINIMUM_RATE_MISSING",
-                        message = "Cannot apply storage minimum: no default storage rate resolved on profile or tenant defaults — minimum skipped",
-                        affectedIds = emptyList()
+                val defaultIdx = storageLines.indexOfFirst { it.projectCode == null }
+                val newVat = gap.multiply(storageCt.vatPercent).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
+                if (defaultIdx >= 0) {
+                    // Existing default-bucket activity — bump its quantity so the
+                    // customer-visible rate stays at the contracted value.
+                    val existing = storageLines[defaultIdx]
+                    val newAmount = existing.amount.add(gap).setScale(2, RoundingMode.HALF_UP)
+                    val newQty = newAmount.divide(existing.ratePerDay, 2, RoundingMode.HALF_UP)
+                    val bumpedVat = newAmount.multiply(storageCt.vatPercent).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
+                    storageLines[defaultIdx] = existing.copy(
+                        cbmDays = newQty,
+                        amount = newAmount,
+                        vatAmount = bumpedVat
+                    )
+                } else if (effectiveDefaultRate.signum() > 0) {
+                    // No default-bucket activity but a per-CBM-d rate is configured —
+                    // emit a single bumped-Qty line so Qty × Rate = Amount holds.
+                    val newQty = gap.divide(effectiveDefaultRate, 2, RoundingMode.HALF_UP)
+                    storageLines += StorageLine(
+                        projectCode = null,
+                        projectLabel = defaultLabel,
+                        cbmDays = newQty,
+                        ratePerDay = effectiveDefaultRate,
+                        amount = gap,
+                        vatPercent = storageCt.vatPercent,
+                        vatAmount = newVat,
+                        description = "${storageCt.label} – ${formatMonth(billingMonth)}",
+                        freighaiChargeTypeId = storageChargeTypeId
                     )
                 } else {
-                    val defaultIdx = storageLines.indexOfFirst { it.projectCode == null }
-                    if (defaultIdx >= 0) {
-                        val existing = storageLines[defaultIdx]
-                        val newAmount = existing.amount.add(gap).setScale(2, RoundingMode.HALF_UP)
-                        val newQty = newAmount.divide(existing.ratePerDay, 2, RoundingMode.HALF_UP)
-                        val newVat = newAmount.multiply(storageCt.vatPercent).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
-                        storageLines[defaultIdx] = existing.copy(
-                            cbmDays = newQty,
-                            amount = newAmount,
-                            vatAmount = newVat
-                        )
-                    } else {
-                        val newQty = gap.divide(effectiveDefaultRate, 2, RoundingMode.HALF_UP)
-                        val newVat = gap.multiply(storageCt.vatPercent).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
-                        storageLines += StorageLine(
-                            projectCode = null,
-                            projectLabel = defaultLabel,
-                            cbmDays = newQty,
-                            ratePerDay = effectiveDefaultRate,
-                            amount = gap,
-                            vatPercent = storageCt.vatPercent,
-                            vatAmount = newVat,
-                            description = "${storageCt.label} – ${formatMonth(billingMonth)}",
-                            freighaiChargeTypeId = storageChargeTypeId
-                        )
-                    }
-                    minimumApplied = gap
-                    storageSubtotal = storageSubtotal.add(gap)
+                    // Pure flat-fee customer — no real storage and no per-CBM-d
+                    // rate configured. Emit a single line with the minimum as a
+                    // monthly charge (Phase F #16 shape preserved).
+                    storageLines += StorageLine(
+                        projectCode = null,
+                        projectLabel = "Monthly storage charge",
+                        cbmDays = BigDecimal.ZERO,
+                        ratePerDay = BigDecimal.ZERO,
+                        amount = gap,
+                        vatPercent = storageCt.vatPercent,
+                        vatAmount = newVat,
+                        description = "Monthly storage – ${formatMonth(billingMonth)}",
+                        freighaiChargeTypeId = storageChargeTypeId
+                    )
                 }
+                minimumApplied = gap
+                storageSubtotal = storageSubtotal.add(gap)
             }
         }
         for (w in occupancy.warnings) {
