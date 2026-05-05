@@ -1186,12 +1186,19 @@ private data class BillingContext(
         val tagged = mutableListOf<TaggedFreighAiLine>()
         var idx = 0
         storageLines.forEach {
+            // Phase H.2: flat-fee storage lines (Phase H.1 fallback for
+            // pure-minimum customers without a per-CBM-d rate) carry
+            // cbmDays=0, ratePerDay=0, amount=minimum. FreighAi rejects
+            // 0 × 0 lines ("Line item must have either debit or credit
+            // greater than zero"), so translate them to 1 month × amount
+            // at the boundary while keeping the WMS-side flat-fee shape.
+            val isFlatFee = it.cbmDays.signum() == 0 && it.ratePerDay.signum() == 0
             tagged += TaggedFreighAiLine(
                 item = FreighAiInvoiceLineItem(
                     description = it.description,
-                    quantity = it.cbmDays,
-                    unit = "CBM-day",
-                    unitPrice = it.ratePerDay,
+                    quantity = if (isFlatFee) BigDecimal.ONE else it.cbmDays,
+                    unit = if (isFlatFee) "month" else "CBM-day",
+                    unitPrice = if (isFlatFee) it.amount else it.ratePerDay,
                     chargeTypeId = it.freighaiChargeTypeId,
                     vatPercent = it.vatPercent,
                     vatAmount = it.vatAmount
