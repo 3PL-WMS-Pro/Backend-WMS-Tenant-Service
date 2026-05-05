@@ -84,6 +84,8 @@ enum class WarningSeverity { BLOCKER, WARNING }
 data class WmsBillingInvoiceResponse(
     val billingInvoiceId: String,
     val customerId: Long,
+    /** Phase G.1 — server-resolved customer name (from FreighAi via AccountIdMapping). Null when lookup fails. */
+    val customerName: String?,
     val billingMonth: String,
     /** Phase G — project bucket this invoice covers; null = default bucket. */
     val projectCode: String?,

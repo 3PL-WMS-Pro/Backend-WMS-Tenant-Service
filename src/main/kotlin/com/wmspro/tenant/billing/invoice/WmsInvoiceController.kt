@@ -34,7 +34,8 @@ class WmsInvoiceController(
     private val invoiceRepository: WmsBillingInvoiceRepository,
     private val freighAiInvoiceClient: FreighAiInvoiceClient,
     private val mongoTemplate: MongoTemplate,
-    private val syncService: WmsInvoiceSyncService
+    private val syncService: WmsInvoiceSyncService,
+    private val customerNameResolver: CustomerNameResolver
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -51,7 +52,8 @@ class WmsInvoiceController(
         @RequestParam(required = false) status: BillingInvoiceStatus?,
         @RequestParam(required = false) freighaiStatus: String?,
         @RequestParam(required = false, defaultValue = "0") page: Int,
-        @RequestParam(required = false, defaultValue = "20") size: Int
+        @RequestParam(required = false, defaultValue = "20") size: Int,
+        httpRequest: HttpServletRequest
     ): ResponseEntity<ApiResponse<WmsInvoiceListResponse>> {
         val criteria = Criteria()
         val parts = mutableListOf<Criteria>()
@@ -67,12 +69,17 @@ class WmsInvoiceController(
         val total = mongoTemplate.count(Query(criteria), WmsBillingInvoice::class.java)
         val rows = mongoTemplate.find(query, WmsBillingInvoice::class.java)
 
+        // Phase G.1: server-side resolve customer names so the list page
+        // doesn't have to paginate the customer roster client-side.
+        val authToken = httpRequest.getHeader(HttpHeaders.AUTHORIZATION).orEmpty()
+        val nameMap = customerNameResolver.resolve(rows.map { it.customerId }.toSet(), authToken)
+
         val response = WmsInvoiceListResponse(
             page = page,
             size = size,
             totalElements = total,
             totalPages = if (size == 0) 0 else ((total + size - 1) / size).toInt(),
-            content = rows.map { it.toResponse() }
+            content = rows.map { it.toResponse(nameMap) }
         )
         return ResponseEntity.ok(ApiResponse.success(response, "Invoices retrieved"))
     }
@@ -136,10 +143,15 @@ class WmsInvoiceController(
             }
         } ?: invoice
 
+        // Phase G.1: enrich the WMS-side response with customer name. For a
+        // single-invoice fetch, the FreighAi side already returns
+        // `partySnapshot.name` separately, but the WMS list/header reuses
+        // the same DTO so we keep the field consistent.
+        val nameMap = customerNameResolver.resolve(setOf(updatedInvoice.customerId), authToken)
         return ResponseEntity.ok(
             ApiResponse.success(
                 WmsInvoiceDetailResponse(
-                    wms = updatedInvoice.toResponse(),
+                    wms = updatedInvoice.toResponse(nameMap),
                     freighai = freighaiData,
                     freighaiFetchError = freighaiFetchError
                 ),

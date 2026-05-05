@@ -28,7 +28,8 @@ class BillingRunController(
     private val service: BillingRunService,
     private val invoiceRepository: WmsBillingInvoiceRepository,
     private val billingProfileRepository: com.wmspro.tenant.billing.profile.CustomerBillingProfileRepository,
-    private val summaryRepository: BillingRunSummaryRepository
+    private val summaryRepository: BillingRunSummaryRepository,
+    private val customerNameResolver: CustomerNameResolver
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -36,11 +37,21 @@ class BillingRunController(
     @GetMapping("/summaries")
     fun listSummaries(
         @RequestParam(required = false, defaultValue = "0") page: Int,
-        @RequestParam(required = false, defaultValue = "20") size: Int
-    ): ResponseEntity<ApiResponse<List<BillingRunSummary>>> {
+        @RequestParam(required = false, defaultValue = "20") size: Int,
+        httpRequest: HttpServletRequest
+    ): ResponseEntity<ApiResponse<List<BillingRunSummaryResponse>>> {
         val pageable = org.springframework.data.domain.PageRequest.of(page, size)
         val summaries = summaryRepository.findAllByOrderByTriggeredAtDesc(pageable)
-        return ResponseEntity.ok(ApiResponse.success(summaries.content, "Summaries retrieved"))
+        // Phase G.1: enrich with customer-name lookup so the BillingRunsScreen
+        // chips can render "Customer Name (#ID)" instead of bare IDs without
+        // forcing the frontend to paginate the full customer roster.
+        val authToken = httpRequest.getHeader(HttpHeaders.AUTHORIZATION).orEmpty()
+        val allCustomerIds = summaries.content.flatMap {
+            it.succeededCustomerIds + it.skippedCustomerIds + it.failedCustomerIds
+        }.toSet()
+        val nameMap = customerNameResolver.resolve(allCustomerIds, authToken)
+        val enriched = summaries.content.map { it.toResponse(nameMap) }
+        return ResponseEntity.ok(ApiResponse.success(enriched, "Summaries retrieved"))
     }
 
     @PostMapping("/preview")
@@ -190,9 +201,52 @@ class BillingRunController(
     }
 }
 
-internal fun WmsBillingInvoice.toResponse() = WmsBillingInvoiceResponse(
+/**
+ * Phase G.1 — wraps a [BillingRunSummary] with a server-resolved
+ * customerId → name map so the BillingRunsScreen chips can render
+ * "Customer Name (#ID)" without a client-side customer fetch.
+ */
+data class BillingRunSummaryResponse(
+    val runId: String,
+    val billingMonth: String,
+    val triggeredAt: java.time.Instant,
+    val triggeredBy: String,
+    val triggerType: String,
+    val succeededCustomerIds: List<Long>,
+    val skippedCustomerIds: List<Long>,
+    val failedCustomerIds: List<Long>,
+    val skipReasons: Map<String, String>,
+    val failureMessages: Map<String, String>,
+    val durationMs: Long,
+    /** keys are customerId-as-string; missing entries → name was not resolvable. */
+    val customerNames: Map<String, String>
+)
+
+internal fun BillingRunSummary.toResponse(customerNamesById: Map<Long, String> = emptyMap()): BillingRunSummaryResponse {
+    val touchedIds = (succeededCustomerIds + skippedCustomerIds + failedCustomerIds).toSet()
+    val namesForRow = touchedIds.mapNotNull { id ->
+        customerNamesById[id]?.let { id.toString() to it }
+    }.toMap()
+    return BillingRunSummaryResponse(
+        runId = runId,
+        billingMonth = billingMonth,
+        triggeredAt = triggeredAt,
+        triggeredBy = triggeredBy,
+        triggerType = triggerType,
+        succeededCustomerIds = succeededCustomerIds,
+        skippedCustomerIds = skippedCustomerIds,
+        failedCustomerIds = failedCustomerIds,
+        skipReasons = skipReasons,
+        failureMessages = failureMessages,
+        durationMs = durationMs,
+        customerNames = namesForRow
+    )
+}
+
+internal fun WmsBillingInvoice.toResponse(customerNamesById: Map<Long, String> = emptyMap()) = WmsBillingInvoiceResponse(
     billingInvoiceId = billingInvoiceId,
     customerId = customerId,
+    customerName = customerNamesById[customerId],
     billingMonth = billingMonth,
     projectCode = projectCode,
     status = status,
