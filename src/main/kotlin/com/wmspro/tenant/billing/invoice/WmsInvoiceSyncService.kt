@@ -2,6 +2,10 @@ package com.wmspro.tenant.billing.invoice
 
 import com.wmspro.common.external.freighai.client.FreighAiInvoiceClient
 import org.slf4j.LoggerFactory
+import org.springframework.data.mongodb.core.MongoTemplate
+import org.springframework.data.mongodb.core.query.Criteria
+import org.springframework.data.mongodb.core.query.Query
+import org.springframework.data.mongodb.core.query.Update
 import org.springframework.stereotype.Service
 import java.time.Instant
 
@@ -18,7 +22,8 @@ import java.time.Instant
 @Service
 class WmsInvoiceSyncService(
     private val invoiceRepository: WmsBillingInvoiceRepository,
-    private val freighAiInvoiceClient: FreighAiInvoiceClient
+    private val freighAiInvoiceClient: FreighAiInvoiceClient,
+    private val mongoTemplate: MongoTemplate
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -39,18 +44,38 @@ class WmsInvoiceSyncService(
             try {
                 val freighai = freighAiInvoiceClient.getInvoice(freighaiInvoiceId, authToken)
                 if (freighai == null) { failed++; continue }
+                // Totals are part of the sync because an invoice can be edited
+                // on either side now — in WMS, or directly in FreighAi. Without
+                // this the WMS list would keep showing pre-edit amounts.
+                // BigDecimal comparison is by compareTo, not equals: 100 and
+                // 100.00 are the same money but not the same object.
+                val totalsMoved = freighai.grandTotal != null
+                    && inv.grandTotal.compareTo(freighai.grandTotal) != 0
                 val changed = inv.freighaiStatus != freighai.currentStatus
                     || inv.freighaiInvoiceDate != freighai.invoiceDate
                     || inv.freighaiDueDate != freighai.dueDate
                     || inv.freighaiOutstandingAmount != freighai.outstandingAmount
-                invoiceRepository.save(
-                    inv.copy(
-                        freighaiStatus = freighai.currentStatus,
-                        freighaiInvoiceDate = freighai.invoiceDate,
-                        freighaiDueDate = freighai.dueDate,
-                        freighaiOutstandingAmount = freighai.outstandingAmount,
-                        lastSyncedAt = Instant.now()
-                    )
+                    || totalsMoved
+
+                // Field-scoped $set rather than a whole-document save. `inv` was
+                // read before this loop started; saving it back would roll over
+                // anything written meanwhile — and since an admin can now edit an
+                // invoice concurrently, that "anything" includes editHistory,
+                // editedLineItems and manuallyEdited. This touches only the
+                // fields sync actually owns.
+                val update = Update()
+                    .set("freighaiStatus", freighai.currentStatus)
+                    .set("freighaiInvoiceDate", freighai.invoiceDate)
+                    .set("freighaiDueDate", freighai.dueDate)
+                    .set("freighaiOutstandingAmount", freighai.outstandingAmount)
+                    .set("lastSyncedAt", Instant.now())
+                freighai.subtotal?.let { update.set("subtotal", it) }
+                freighai.totalVatAmount?.let { update.set("totalVat", it) }
+                freighai.grandTotal?.let { update.set("grandTotal", it) }
+                mongoTemplate.updateFirst(
+                    Query(Criteria.where("_id").`is`(inv.billingInvoiceId)),
+                    update,
+                    WmsBillingInvoice::class.java
                 )
                 if (changed) refreshed++ else unchanged++
             } catch (e: Exception) {

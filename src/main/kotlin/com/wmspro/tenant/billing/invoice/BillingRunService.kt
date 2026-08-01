@@ -1,5 +1,6 @@
 package com.wmspro.tenant.billing.invoice
 
+import com.wmspro.common.external.freighai.client.CancelResult
 import com.wmspro.common.external.freighai.client.FreighAiChargeTypeClient
 import com.wmspro.common.external.freighai.client.FreighAiInvoiceClient
 import com.wmspro.common.external.freighai.client.InvoiceCreationResult
@@ -476,12 +477,40 @@ class BillingRunService(
         if (invoice.status == BillingInvoiceStatus.CANCELLED) return invoice
 
         // Cancel in FreighAi first if a binding exists.
+        //
+        // This must succeed before anything local is touched. FreighAi only
+        // permits cancelling a DRAFT invoice — for SENT/PAID it answers 409 and
+        // says to raise a credit note. Previously that refusal was logged and
+        // ignored, so WMS would mark the invoice CANCELLED and release its
+        // GRNs/GINs/ServiceLogs while FreighAi still held a live invoice with a
+        // posted voucher. The freed records were then picked up by the next
+        // billing run and the customer was invoiced twice for the same work.
         if (invoice.freighaiInvoiceId != null) {
-            val freighaiOk = freighAiInvoiceClient.cancelInvoice(invoice.freighaiInvoiceId, reason, authToken)
-            if (!freighaiOk) {
-                logger.warn(
-                    "FreighAi cancel returned non-2xx for invoice {} — proceeding with local lock-clear; admin may need to retry FreighAi cancel manually.",
-                    invoice.freighaiInvoiceId
+            when (val result = freighAiInvoiceClient.cancelInvoice(invoice.freighaiInvoiceId, reason, authToken)) {
+                is CancelResult.Success -> logger.info(
+                    "FreighAi invoice {} cancelled; proceeding with local cascade", invoice.freighaiInvoiceId
+                )
+                is CancelResult.Rejected -> {
+                    // Already cancelled on their side is fine — the local cleanup
+                    // below is exactly what's still outstanding.
+                    val alreadyCancelled = result.errorMessage.contains("already cancelled", ignoreCase = true)
+                    if (!alreadyCancelled) {
+                        throw IllegalStateException(
+                            "FreighAi will not cancel invoice ${invoice.freighaiInvoiceNo ?: invoice.freighaiInvoiceId}: " +
+                                "${result.errorMessage}. The WMS invoice was left untouched — cancelling it here " +
+                                "would release its GRNs/GINs for re-billing while the customer still holds a live " +
+                                "invoice. Raise a credit note in FreighAi instead."
+                        )
+                    }
+                    logger.info(
+                        "FreighAi invoice {} was already cancelled; continuing with local cleanup",
+                        invoice.freighaiInvoiceId
+                    )
+                }
+                is CancelResult.Unreachable -> throw IllegalStateException(
+                    "Could not reach FreighAi to cancel invoice " +
+                        "${invoice.freighaiInvoiceNo ?: invoice.freighaiInvoiceId} (${result.errorMessage}). " +
+                        "Nothing was changed — try again once FreighAi is reachable."
                 )
             }
         }

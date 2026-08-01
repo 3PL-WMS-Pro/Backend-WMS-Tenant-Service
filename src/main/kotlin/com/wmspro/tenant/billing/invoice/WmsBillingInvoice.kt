@@ -92,7 +92,86 @@ data class WmsBillingInvoice(
 
     val cancelledAt: Instant? = null,
     val cancelledBy: String? = null,
-    val cancelReason: String? = null
+    val cancelReason: String? = null,
+
+    /**
+     * True once an admin has hand-edited this invoice through the WMS edit
+     * surface. Flags that `storageLines` / `movementLines` / `serviceLines`
+     * are no longer reproducible from warehouse data + rate cards, so
+     * reconciliation and any future regeneration must not assume
+     * `quantity × rate = amount` for this invoice.
+     */
+    val manuallyEdited: Boolean = false,
+
+    /**
+     * The invoice as it now stands in FreighAi, flat, after the most recent
+     * edit. Null until the first edit, at which point this becomes the
+     * display truth and the structured storage/movement/service lines above
+     * are retained only as provenance — the record of what the engine
+     * originally computed.
+     */
+    val editedLineItems: List<EditedLineItem>? = null,
+
+    /** Append-only audit of every hand-edit. Empty for untouched invoices. */
+    val editHistory: List<InvoiceEditEntry> = emptyList()
+)
+
+/**
+ * A single line as it exists in FreighAi after an edit. Mirrors FreighAi's
+ * `InvoiceLineItem` (including its server-assigned `lineNo`) plus two WMS-only
+ * markers that never leave this collection.
+ */
+data class EditedLineItem(
+    val lineNo: Int,
+    val description: String,
+    val quantity: BigDecimal,
+    val unit: String,
+    val unitPrice: BigDecimal,
+    val amount: BigDecimal,
+    val chargeTypeId: String?,
+    val chargeTypeLabel: String?,
+    val vatPercent: BigDecimal?,
+    val vatAmount: BigDecimal?,
+    val ledgerId: String?,
+    /** Added by hand in WMS — no aggregator or source record produced it. */
+    val isManual: Boolean = false,
+    /**
+     * Zeroed out by an admin. Kept here for the audit trail but withheld from
+     * the FreighAi payload: FreighAi builds one voucher item per invoice line
+     * and rejects any item with neither debit nor credit greater than zero, so
+     * a zero line would fail the whole update.
+     */
+    val isZeroed: Boolean = false
+)
+
+/**
+ * One hand-edit of an invoice. `reason` is mandatory at the API boundary —
+ * an invoice is a financial document and "who changed what" is not enough
+ * on its own to reconstruct why months later.
+ */
+data class InvoiceEditEntry(
+    val editedAt: Instant,
+    val editedBy: String,
+    val reason: String,
+    val changes: List<EditedFieldChange>,
+    /**
+     * FreighAi's status immediately before the edit. "SENT" records that this
+     * edit ran a revert → update → re-send cycle rather than a plain update.
+     */
+    val freighaiStatusBefore: String?,
+    val subtotalBefore: BigDecimal?,
+    val subtotalAfter: BigDecimal?,
+    val grandTotalBefore: BigDecimal?,
+    val grandTotalAfter: BigDecimal?
+)
+
+data class EditedFieldChange(
+    /** Human-readable pointer, e.g. "Line 3 (Storage – April 2026)". */
+    val lineRef: String,
+    /** One of: description, quantity, unitPrice, vatPercent, added, zeroed. */
+    val field: String,
+    val oldValue: String?,
+    val newValue: String?
 )
 
 enum class BillingInvoiceStatus {

@@ -192,6 +192,12 @@ class BillingRunController(
             ResponseEntity.ok(ApiResponse.success(cancelled.toResponse(), "Billing run cancelled"))
         } catch (e: IllegalArgumentException) {
             ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.message ?: "Not found"))
+        } catch (e: IllegalStateException) {
+            // FreighAi refused the cancel (issued invoice → credit note) or was
+            // unreachable. Nothing was changed; the admin needs the reason, not
+            // a 500.
+            logger.warn("cancel refused for {}: {}", billingInvoiceId, e.message)
+            ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(e.message ?: "Cancel refused"))
         } catch (e: Exception) {
             logger.error("cancel failed", e)
             ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
@@ -272,5 +278,8 @@ internal fun WmsBillingInvoice.toResponse(customerNamesById: Map<Long, String> =
     cancelledAt = cancelledAt,
     cancelledBy = cancelledBy,
     cancelReason = cancelReason,
-    displayStatus = deriveDisplayStatus(status, freighaiStatus)
+    displayStatus = deriveDisplayStatus(status, freighaiStatus),
+    manuallyEdited = manuallyEdited,
+    editedLineItems = editedLineItems,
+    editHistory = editHistory
 )

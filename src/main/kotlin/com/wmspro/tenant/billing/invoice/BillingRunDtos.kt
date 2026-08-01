@@ -120,7 +120,19 @@ data class WmsBillingInvoiceResponse(
      * Values: GENERATING | FAILED_TO_SEND | PROCESSING | AWAITING_SEND |
      *         SENT | PARTIALLY_PAID | PAID | CANCELLED
      */
-    val displayStatus: String
+    val displayStatus: String,
+
+    /**
+     * True once an admin has hand-edited this invoice. The structured
+     * storage/movement/service lines above are then historical provenance
+     * only — [editedLineItems] is what the customer was actually billed.
+     */
+    val manuallyEdited: Boolean = false,
+
+    /** Post-edit line list as FreighAi holds it. Null for untouched invoices. */
+    val editedLineItems: List<EditedLineItem>? = null,
+
+    val editHistory: List<InvoiceEditEntry> = emptyList()
 )
 
 /**
