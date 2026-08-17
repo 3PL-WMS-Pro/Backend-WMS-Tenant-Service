@@ -38,6 +38,21 @@ data class TenantDatabaseMapping(
      */
     val freighaiTenantId: String? = null,
 
+    /**
+     * Short slug identifying this tenant in the customer-portal URL, e.g. `INFINITY` in
+     * `portal.wms.../INFINITY/login`. Uppercase, alphanumeric plus hyphen.
+     *
+     * Its presence is what switches the customer portal ON for a tenant — clearing it disables the
+     * whole portal for that tenant without touching a single portal-user record.
+     *
+     * Note this is a *hint* to the portal, not an authorization input: a URL path segment is
+     * client-supplied exactly like a header. Portal credentials are keyed `(tenantId, email)`, so a
+     * caller who supplies the wrong code simply fails to authenticate and learns nothing.
+     *
+     * Consumed read-only by wms-customer-portal-service; owned and written here.
+     */
+    val portalTenantCode: String? = null,
+
     val lastConnected: LocalDateTime? = null,
 
     @CreatedDate
