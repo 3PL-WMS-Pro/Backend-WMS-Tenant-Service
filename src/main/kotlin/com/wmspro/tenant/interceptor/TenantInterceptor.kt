@@ -30,6 +30,8 @@ class TenantInterceptor(
             "/api/v1/tenant-settings", // Tenant settings also use central DB
             "/api/v1/document-templates", // Document templates stored centrally (global shared templates)
             "/users/login",     // Login proxy: user has no tenant context yet; tenant is resolved via FreighAi response
+            "/users/refresh",   // Same: the refresh token carries no WMS tenant; clientId is re-resolved from the new JWT
+            "/users/logout",    // Pure FreighAi token revocation; touches no tenant data
             "/clients/get",     // /clients/get/by-id/{id} reads tenant_database_mappings (central DB)
             "/actuator",
             "/health",

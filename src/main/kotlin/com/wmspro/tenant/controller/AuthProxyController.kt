@@ -3,7 +3,9 @@ package com.wmspro.tenant.controller
 import com.wmspro.common.dto.ApiResponse
 import com.wmspro.tenant.dto.LoginRequest
 import com.wmspro.tenant.dto.LoginResponse
+import com.wmspro.tenant.dto.RefreshTokenRequest
 import com.wmspro.tenant.service.AuthProxyService
+import com.wmspro.tenant.service.RefreshOutcome
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.validation.Valid
@@ -50,5 +52,70 @@ class AuthProxyController(
             )
 
         return ResponseEntity.ok(ApiResponse.success(response, "Login successful"))
+    }
+
+    /**
+     * Exchanges a refresh token for a fresh access token, returning the same payload
+     * shape as `/login` so a client can overwrite its stored session wholesale.
+     *
+     * Public at the gateway: by definition the caller's access token has expired, so
+     * requiring one here would make the endpoint unusable. Authorisation comes from
+     * possession of the refresh token itself, which FreighAi validates and revokes.
+     */
+    @PostMapping("/refresh")
+    @Operation(
+        summary = "Refresh access token (FreighAi-backed)",
+        description = "Exchanges a refresh token for a new access token. FreighAi ROTATES the refresh token, so the returned refreshToken is new and the presented one is now revoked — clients must persist what comes back."
+    )
+    fun refresh(
+        @Valid @RequestBody request: RefreshTokenRequest
+    ): ResponseEntity<ApiResponse<LoginResponse>> {
+        logger.info("POST /users/refresh")
+
+        return when (val outcome = authProxyService.refresh(request.refreshToken)) {
+            is RefreshOutcome.Refreshed ->
+                ResponseEntity.ok(ApiResponse.success(outcome.response, "Token refreshed"))
+
+            // Terminal: FreighAi answered and refused. Clients end the session.
+            is RefreshOutcome.Rejected ->
+                ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(
+                    ApiResponse.error("Refresh token is invalid or expired")
+                )
+
+            // Retryable: we could not reach FreighAi. Deliberately NOT 401 — the
+            // mobile client treats 401 as "session over" and force-logs-out, so
+            // answering 401 here would end every operator's shift during a blip.
+            is RefreshOutcome.Unavailable -> {
+                logger.warn("Refresh unavailable: {}", outcome.errorMessage)
+                ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(
+                    ApiResponse.error("Authentication service is temporarily unavailable")
+                )
+            }
+        }
+    }
+
+    /**
+     * Revokes the refresh token at FreighAi.
+     *
+     * Always answers 200. The client is discarding its credentials regardless, and a
+     * token we failed to revoke expires on its own within 7 days — returning an error
+     * would only tempt clients to keep a session they have already abandoned.
+     */
+    @PostMapping("/logout")
+    @Operation(
+        summary = "Logout (FreighAi-backed)",
+        description = "Revokes the refresh token at FreighAi. Always returns 200 — the client clears local credentials either way."
+    )
+    fun logout(
+        @Valid @RequestBody request: RefreshTokenRequest
+    ): ResponseEntity<ApiResponse<Unit>> {
+        logger.info("POST /users/logout")
+
+        val revoked = authProxyService.logout(request.refreshToken)
+        if (!revoked) {
+            logger.warn("FreighAi did not confirm refresh-token revocation; client session cleared regardless")
+        }
+
+        return ResponseEntity.ok(ApiResponse.success(Unit, "Logged out"))
     }
 }

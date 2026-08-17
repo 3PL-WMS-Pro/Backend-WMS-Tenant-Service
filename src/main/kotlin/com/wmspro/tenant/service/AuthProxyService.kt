@@ -2,6 +2,7 @@ package com.wmspro.tenant.service
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.wmspro.common.external.freighai.client.FreighAiAuthClient
+import com.wmspro.common.external.freighai.client.RefreshResult
 import com.wmspro.common.external.freighai.dto.FreighAiAuthResponse
 import com.wmspro.tenant.dto.LoginRequest
 import com.wmspro.tenant.dto.LoginResponse
@@ -9,6 +10,7 @@ import com.wmspro.tenant.dto.LoginSession
 import com.wmspro.tenant.repository.TenantDatabaseMappingRepository
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
+import java.time.Instant
 import java.util.Base64
 import java.util.UUID
 
@@ -30,11 +32,17 @@ import java.util.UUID
  *        clientId     = the resolved WMS Long
  *        accessLevel  = a small object derived from FreighAi's role/permissions
  *        email/fullName = from FreighAi's user payload
- *        loginSession = synthesized UUID (frontend just stores it for tracking)
+ *        loginSession = synthesized UUID + absolute token expiry
  *        userTypeId   = FreighAi role string (e.g. "ADMIN")
  *
  * Auth at the WMS gateway is updated separately to validate FreighAi-signed JWTs
  * (Phase 5 gateway change — JwtService secret swap).
+ *
+ * Mobile migration (M2/M3): [refresh] and [logout] were added so the handheld app
+ * can survive FreighAi's 24h access-token TTL mid-shift, and the login payload
+ * gained `refreshToken`, `firstName`/`lastName` and `loginSession.tokenExpiry`.
+ * Those additions are purely additive — the web client reads by field name and
+ * ignores the rest, so `useAuth.js` still needs no changes.
  */
 @Service
 class AuthProxyService(
@@ -52,7 +60,46 @@ class AuthProxyService(
     fun login(request: LoginRequest): LoginResponse? {
         val freighai = freighAiAuthClient.login(request.email, request.password)
             ?: return null
+        return toLoginResponse(freighai)
+    }
 
+    /**
+     * Exchanges a refresh token for a fresh access token.
+     *
+     * FreighAi rotates the refresh token on every use, so the returned
+     * `refreshToken` is a NEW one and the presented token is now revoked. Clients
+     * must persist what comes back; re-presenting the old token fails.
+     *
+     * Returns [RefreshOutcome.Rejected] when FreighAi answers and refuses the token
+     * (expired, revoked, already rotated) — terminal, the caller answers 401 and the
+     * client re-logs-in. Returns [RefreshOutcome.Unavailable] when FreighAi could not
+     * be reached at all — retryable, the caller answers 503 and the client keeps its
+     * session. Conflating the two would log every operator out during a brief outage.
+     */
+    fun refresh(refreshToken: String): RefreshOutcome = when (val result = freighAiAuthClient.refresh(refreshToken)) {
+        is RefreshResult.Success -> RefreshOutcome.Refreshed(toLoginResponse(result.auth))
+        is RefreshResult.Rejected -> RefreshOutcome.Rejected
+        is RefreshResult.Unavailable -> RefreshOutcome.Unavailable(result.errorMessage)
+    }
+
+    /**
+     * Revokes the refresh token at FreighAi. Returns FreighAi's acknowledgement,
+     * but the caller should treat logout as successful regardless — the client is
+     * discarding its credentials either way, and a stale refresh token that we
+     * failed to revoke expires on its own within 7 days.
+     */
+    fun logout(refreshToken: String): Boolean = freighAiAuthClient.logout(refreshToken)
+
+    /**
+     * Maps a FreighAi auth payload onto the leadtorev-shaped response both WMS
+     * clients consume. Shared by [login] and [refresh] so the two can never drift
+     * — a mobile client that got a different shape from refresh than from login
+     * would corrupt its own stored session.
+     *
+     * `loginSession.id` is freshly synthesised on each call, including refresh.
+     * Nothing keys off it; it exists because the leadtorev response had it.
+     */
+    private fun toLoginResponse(freighai: FreighAiAuthResponse): LoginResponse {
         val freighaiTenantId = extractTenantIdClaim(freighai.accessToken)
             ?: throw IllegalStateException(
                 "FreighAi auth response did not contain a tenant_id claim; cannot resolve WMS clientId"
@@ -65,13 +112,21 @@ class AuthProxyService(
             )
         }
 
+        val (firstName, lastName) = splitName(freighai.user.name)
+
         return LoginResponse(
             authToken = freighai.accessToken,
+            refreshToken = freighai.refreshToken,
             clientId = tenant.clientId,
             accessLevel = buildAccessLevel(freighai),
             email = freighai.user.email,
             fullName = freighai.user.name,
-            loginSession = LoginSession(id = UUID.randomUUID().toString()),
+            firstName = firstName,
+            lastName = lastName,
+            loginSession = LoginSession(
+                id = UUID.randomUUID().toString(),
+                tokenExpiry = Instant.now().plusSeconds(freighai.expiresIn).toString()
+            ),
             userTypeId = freighai.user.role
         )
     }
@@ -105,4 +160,35 @@ class AuthProxyService(
         "teams" to freighai.user.teams,
         "permissions" to freighai.user.permissions
     )
+}
+
+/**
+ * FreighAi stores a single `name`; the mobile Profile and Home screens want first
+ * and last separately. Splits on the first space — "Gautam Aggarwal" becomes
+ * ("Gautam", "Aggarwal") and a single-word "Gautam" becomes ("Gautam", "").
+ *
+ * Top-level and `internal` so it can be unit-tested directly, matching the
+ * `consolidateFreighAiLines` idiom elsewhere in this service.
+ */
+/**
+ * Outcome of [AuthProxyService.refresh].
+ *
+ * [Rejected] becomes 401 and tells the client its session is over; [Unavailable]
+ * becomes 503 and tells it to try again. They must not be conflated — see
+ * [com.wmspro.common.external.freighai.client.RefreshResult].
+ */
+sealed class RefreshOutcome {
+    data class Refreshed(val response: LoginResponse) : RefreshOutcome()
+    object Rejected : RefreshOutcome()
+    data class Unavailable(val errorMessage: String) : RefreshOutcome()
+}
+
+internal fun splitName(name: String): Pair<String, String> {
+    val trimmed = name.trim()
+    val idx = trimmed.indexOf(' ')
+    return if (idx < 0) {
+        trimmed to ""
+    } else {
+        trimmed.substring(0, idx) to trimmed.substring(idx + 1).trim()
+    }
 }
