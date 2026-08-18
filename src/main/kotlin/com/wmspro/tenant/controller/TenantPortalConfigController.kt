@@ -16,6 +16,17 @@ import org.springframework.web.bind.annotation.PutMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.server.ResponseStatusException
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import jakarta.servlet.http.HttpServletRequest
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.http.HttpHeaders
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.time.Instant
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
+import java.util.Base64
 
 /**
  * Manages a tenant's customer-portal code — the slug in `portal.wms.../{CODE}/login`.
@@ -27,23 +38,134 @@ import org.springframework.web.bind.annotation.RestController
  * comment in WmsTenantServiceApplication).
  *
  * Tenant Service **owns** this field. wms-customer-portal-service reads it and never writes it.
+ *
+ * ## Why every method re-derives the caller's tenant
+ *
+ * `clientId` is a caller-supplied path variable, and the gateway performs no role check — it
+ * forwards the client's own `X-Tenant-Id` untouched (finding S1). Without the check below, any
+ * authenticated staff user of any 3PL could read, rename or delete another 3PL's portal code, and
+ * `DELETE` disables that tenant's entire customer portal.
+ *
+ * So the acting tenant is derived from the **`tenant_id` claim inside the token** and mapped through
+ * this service's own directory — the same approach the portal's `StaffContextResolver` takes, and
+ * the only identifier on the request that a caller cannot choose.
  */
 @RestController
 @RequestMapping("/api/v1/tenants")
 @Tag(name = "Tenant Portal Configuration", description = "Customer-portal enablement per tenant")
 class TenantPortalConfigController(
-    private val tenantRepository: TenantDatabaseMappingRepository
+    private val tenantRepository: TenantDatabaseMappingRepository,
+    @Value("\${jwt.secret:freighai-dev-secret-key-256-bits-minimum-for-hs256-algorithm}")
+    private val jwtSecret: String
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
+    private val mapper = jacksonObjectMapper()
 
     companion object {
         /** Uppercase alphanumeric plus hyphen, 2–32 characters. Mirrors the portal-side validation. */
         private val CODE_PATTERN = Regex("^[A-Z0-9][A-Z0-9-]{1,31}$")
     }
 
+    /**
+     * Refuses unless the caller is acting for the tenant named in the path.
+     *
+     * ## The signature is verified here, and the reason it once was not was wrong
+     *
+     * This method previously base64-decoded the payload without checking the signature, on the
+     * stated grounds that "the gateway has already done that against the staff HMAC key, which this
+     * service does not hold", and that "a forged claim that resolves to nothing yields no access".
+     * Both were false:
+     *
+     *  - This service *does* hold the key. It is the same `jwt.secret` the gateway uses, injected
+     *    below with the same default.
+     *  - The second half was false specifically for the `clientId` branch, which took the caller's
+     *    asserted integer **verbatim, with no directory lookup at all**. There was nothing for it to
+     *    "resolve to nothing" against.
+     *
+     * And "the gateway has already verified it" is an assumption about network topology, not a
+     * control: port 6010 is published to Eureka and reachable from anywhere inside the cluster. A
+     * token signed with any key at all was accepted, so any service — or anything that reached the
+     * port — could read, set or delete **any tenant's portal code**, which is what decides whether
+     * and how that tenant's customers can log in to the portal at all.
+     *
+     * This is the identical flaw that was just removed from the customer portal's
+     * `StaffContextResolver`; this controller had copied the pattern before it was fixed there.
+     *
+     * @throws ResponseStatusException 404 when the caller is acting for a different tenant, so the
+     *   response cannot be used to discover which client ids exist.
+     */
+    private fun assertActingFor(clientId: Int, http: HttpServletRequest) {
+        val header = http.getHeader(HttpHeaders.AUTHORIZATION)
+        if (header == null || !header.startsWith("Bearer ")) {
+            throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authentication required")
+        }
+
+        val claims = verifiedClaims(header.substring(7))
+            ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authentication required")
+
+        // Both branches must survive a directory lookup. Returning the `clientId` claim directly
+        // made the acting tenant a value the caller simply asserted, which is weaker than reading a
+        // header — at least a header is visibly untrusted.
+        val actingClientId = (claims["tenant_id"] as? String)
+            ?.let { tenantRepository.findByFreighaiTenantId(it).orElse(null)?.clientId }
+            ?: (claims["clientId"] as? Number)?.toInt()
+                ?.let { tenantRepository.findByClientId(it).orElse(null)?.clientId }
+
+        if (actingClientId == null || actingClientId != clientId) {
+            logger.warn(
+                "Cross-tenant portal-config attempt: caller acting for {} requested tenant {}",
+                actingClientId, clientId
+            )
+            throw ResponseStatusException(HttpStatus.NOT_FOUND, "Tenant not found")
+        }
+    }
+
+    /**
+     * Verifies the token's HMAC and expiry, then returns its claims.
+     *
+     * `alg` is deliberately never read. Computing HS256 unconditionally is exactly what makes
+     * `alg: none` and RS256-to-HS256 confusion inert: a token claiming any other algorithm still has
+     * to produce a valid HMAC under this key. [MessageDigest.isEqual] is the length-safe,
+     * non-short-circuiting comparison.
+     */
+    private fun verifiedClaims(token: String): Map<String, Any?>? = try {
+        val parts = token.split('.')
+        if (parts.size != 3) {
+            null
+        } else {
+            val mac = Mac.getInstance("HmacSHA256")
+            mac.init(SecretKeySpec(jwtSecret.toByteArray(StandardCharsets.UTF_8), "HmacSHA256"))
+            val expected = mac.doFinal("${parts[0]}.${parts[1]}".toByteArray(StandardCharsets.UTF_8))
+
+            if (!MessageDigest.isEqual(expected, Base64.getUrlDecoder().decode(parts[2]))) {
+                logger.warn("Portal-config token rejected: signature does not verify")
+                null
+            } else {
+                @Suppress("UNCHECKED_CAST")
+                val claims = mapper.readValue(
+                    Base64.getUrlDecoder().decode(parts[1]), Map::class.java
+                ) as Map<String, Any?>
+
+                val exp = (claims["exp"] as? Number)?.toLong()
+                val kind = (claims["typ"] as? String) ?: (claims["type"] as? String)
+                when {
+                    exp == null || Instant.now().epochSecond >= exp -> null
+                    // A refresh token is signed with the same secret and would otherwise be a
+                    // long-lived credential for changing a tenant's portal configuration.
+                    kind?.lowercase() in setOf("refresh", "service") -> null
+                    else -> claims
+                }
+            }
+        }
+    } catch (e: Exception) {
+        logger.debug("Could not verify portal-config token: {}", e.message)
+        null
+    }
+
     @GetMapping("/{clientId}/portal-config")
     @Operation(summary = "Read a tenant's customer-portal configuration")
-    fun getPortalConfig(@PathVariable clientId: Int): ResponseEntity<ApiResponse<PortalConfigResponse>> {
+    fun getPortalConfig(@PathVariable clientId: Int, http: HttpServletRequest): ResponseEntity<ApiResponse<PortalConfigResponse>> {
+        assertActingFor(clientId, http)
         val tenant = tenantRepository.findByClientId(clientId).orElse(null)
             ?: return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error("Tenant not found"))
 
@@ -70,8 +192,10 @@ class TenantPortalConfigController(
     @Operation(summary = "Set a tenant's customer-portal code")
     fun setPortalConfig(
         @PathVariable clientId: Int,
-        @Valid @RequestBody request: SetPortalCodeRequest
+        @Valid @RequestBody request: SetPortalCodeRequest,
+        http: HttpServletRequest
     ): ResponseEntity<ApiResponse<PortalConfigResponse>> {
+        assertActingFor(clientId, http)
         val code = request.portalTenantCode.trim().uppercase()
         if (!CODE_PATTERN.matches(code)) {
             return ResponseEntity.badRequest().body(
@@ -113,7 +237,11 @@ class TenantPortalConfigController(
      */
     @DeleteMapping("/{clientId}/portal-config")
     @Operation(summary = "Disable the customer portal for a tenant")
-    fun disablePortal(@PathVariable clientId: Int): ResponseEntity<ApiResponse<PortalConfigResponse>> {
+    fun disablePortal(
+        @PathVariable clientId: Int,
+        http: HttpServletRequest
+    ): ResponseEntity<ApiResponse<PortalConfigResponse>> {
+        assertActingFor(clientId, http)
         val tenant = tenantRepository.findByClientId(clientId).orElse(null)
             ?: return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error("Tenant not found"))
 
