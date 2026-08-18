@@ -56,7 +56,10 @@ import java.util.Base64
 class TenantPortalConfigController(
     private val tenantRepository: TenantDatabaseMappingRepository,
     @Value("\${jwt.secret:freighai-dev-secret-key-256-bits-minimum-for-hs256-algorithm}")
-    private val jwtSecret: String
+    private val jwtSecret: String,
+    /** Must match `portal.base-url` in wms-customer-portal-service, which builds email links from it. */
+    @Value("\${portal.base-url:http://localhost:3100}")
+    private val portalBaseUrl: String
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val mapper = jacksonObjectMapper()
@@ -171,12 +174,7 @@ class TenantPortalConfigController(
 
         return ResponseEntity.ok(
             ApiResponse.success(
-                PortalConfigResponse(
-                    clientId = tenant.clientId,
-                    tenantName = tenant.tenantName,
-                    portalTenantCode = tenant.portalTenantCode,
-                    portalEnabled = !tenant.portalTenantCode.isNullOrBlank()
-                ),
+                portalConfigOf(tenant.clientId, tenant.tenantName, tenant.portalTenantCode),
                 "Portal configuration retrieved"
             )
         )
@@ -223,7 +221,7 @@ class TenantPortalConfigController(
 
         return ResponseEntity.ok(
             ApiResponse.success(
-                PortalConfigResponse(saved.clientId, saved.tenantName, saved.portalTenantCode, true),
+                portalConfigOf(saved.clientId, saved.tenantName, saved.portalTenantCode),
                 "Customer portal enabled"
             )
         )
@@ -250,9 +248,32 @@ class TenantPortalConfigController(
 
         return ResponseEntity.ok(
             ApiResponse.success(
-                PortalConfigResponse(saved.clientId, saved.tenantName, null, false),
+                portalConfigOf(saved.clientId, saved.tenantName, null),
                 "Customer portal disabled"
             )
+        )
+    }
+
+    /**
+     * Builds the response, including the URL customers actually use.
+     *
+     * Centralised so the three endpoints cannot disagree about how the URL is formed — a read path
+     * returning a different shape from the write path is exactly the kind of thing an admin screen
+     * renders inconsistently and nobody notices until a customer is sent the wrong link.
+     *
+     * The host comes from configuration rather than the client, because it differs between local,
+     * staging and production and the leadtorev-to-freighai move is still undecided. A hostname
+     * hardcoded in an admin screen looks authoritative and will eventually be wrong.
+     */
+    private fun portalConfigOf(clientId: Int, tenantName: String, code: String?): PortalConfigResponse {
+        val base = portalBaseUrl.trimEnd('/')
+        return PortalConfigResponse(
+            clientId = clientId,
+            tenantName = tenantName,
+            portalTenantCode = code,
+            portalEnabled = !code.isNullOrBlank(),
+            portalUrl = code?.takeIf { it.isNotBlank() }?.let { "$base/$it/login" },
+            portalBaseUrl = base
         )
     }
 }
@@ -266,5 +287,18 @@ data class PortalConfigResponse(
     val clientId: Int,
     val tenantName: String,
     val portalTenantCode: String?,
-    val portalEnabled: Boolean
+    val portalEnabled: Boolean,
+
+    /**
+     * Where this tenant's customers actually sign in, or null when the portal is not enabled.
+     *
+     * Returned by the server rather than assembled by the client, because the host is deployment
+     * configuration: it differs between local, staging and production, and the migration from
+     * leadtorev to freighai is still undecided. A hardcoded hostname in an admin screen is a
+     * support call waiting to happen — it will look authoritative and be wrong.
+     */
+    val portalUrl: String?,
+
+    /** The host portion alone, so a client can render `{base}/{CODE}` while the code is typed. */
+    val portalBaseUrl: String
 )
