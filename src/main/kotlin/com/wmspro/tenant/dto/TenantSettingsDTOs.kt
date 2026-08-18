@@ -217,6 +217,8 @@ data class S3ConfigurationResponse(
     val accessKeyMasked: String, // Shows only last 4 characters
     val secretKeyMasked: String, // Shows only last 4 characters
     val bucketPrefix: String?,
+    /** Null means AWS; a URL means an S3-compatible service such as self-hosted MinIO. */
+    val endpoint: String?,
     val isConfigured: Boolean,
     val lastModified: java.time.LocalDateTime?
 )
@@ -237,5 +239,13 @@ data class SetS3ConfigurationRequest(
     @field:NotBlank(message = "Secret key cannot be blank")
     val secretKey: String,
 
-    val bucketPrefix: String? = null
+    val bucketPrefix: String? = null,
+
+    /**
+     * Optional S3-compatible endpoint. Omit or leave blank to use AWS.
+     *
+     * Region remains required either way — MinIO ignores it, but the AWS SDK will not build a
+     * client without one.
+     */
+    val endpoint: String? = null
 )

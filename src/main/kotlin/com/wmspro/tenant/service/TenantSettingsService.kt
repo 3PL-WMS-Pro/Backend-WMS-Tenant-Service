@@ -466,6 +466,7 @@ class TenantSettingsService(
             accessKeyMasked = maskCredential(s3Config.accessKey),
             secretKeyMasked = maskCredential(s3Config.secretKey),
             bucketPrefix = s3Config.bucketPrefix,
+            endpoint = s3Config.endpoint,
             isConfigured = s3Config.bucketName.isNotBlank() && s3Config.accessKey.isNotBlank(),
             lastModified = tenant.updatedAt
         )
@@ -487,7 +488,8 @@ class TenantSettingsService(
             region = request.region,
             accessKey = request.accessKey,
             secretKey = request.secretKey,
-            bucketPrefix = request.bucketPrefix
+            bucketPrefix = request.bucketPrefix,
+            endpoint = request.endpoint?.takeIf { it.isNotBlank() }
         )
 
         val updatedTenant = tenant.copy(
@@ -504,6 +506,7 @@ class TenantSettingsService(
             accessKeyMasked = maskCredential(newS3Config.accessKey),
             secretKeyMasked = maskCredential(newS3Config.secretKey),
             bucketPrefix = newS3Config.bucketPrefix,
+            endpoint = newS3Config.endpoint,
             isConfigured = true,
             lastModified = LocalDateTime.now()
         )

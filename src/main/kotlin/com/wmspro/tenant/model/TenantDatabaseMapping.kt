@@ -114,13 +114,29 @@ data class S3Configuration(
     @field:NotBlank(message = "Secret key cannot be blank")
     val secretKey: String,
 
-    val bucketPrefix: String? = null
+    val bucketPrefix: String? = null,
+
+    /**
+     * Base URL of an S3-compatible service to use instead of AWS.
+     *
+     * Null means AWS, so every tenant configured before this field existed keeps working untouched.
+     * Set it to point a tenant at self-hosted storage (MinIO) instead.
+     *
+     * Region stays required even when this is set: MinIO ignores the value, but the AWS SDK will
+     * not construct a client without one.
+     */
+    val endpoint: String? = null
 ) {
     init {
         require(bucketName.isNotBlank()) { "Bucket name cannot be blank" }
         require(region.isNotBlank()) { "Region cannot be blank" }
         require(accessKey.isNotBlank()) { "Access key cannot be blank" }
         require(secretKey.isNotBlank()) { "Secret key cannot be blank" }
+        endpoint?.let {
+            require(it.isBlank() || it.startsWith("http://") || it.startsWith("https://")) {
+                "Endpoint must be an absolute http(s) URL"
+            }
+        }
     }
 }
 
