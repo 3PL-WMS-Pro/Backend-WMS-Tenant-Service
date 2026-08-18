@@ -159,3 +159,11 @@ eureka:
   client:
     service-url:
       defaultZone: ${EUREKA_SERVER_URL:http://localhost:6000/eureka/}
+
+# Where the Customer Portal is served.
+#
+# MUST match `portal.base-url` in wms-customer-portal-service: that service builds invitation and
+# password-reset links from it, and this one reports the sign-in URL to the admin screen. If the two
+# disagree, an administrator is shown one address while customers are emailed another.
+portal:
+  base-url: ${PORTAL_BASE_URL:http://localhost:3100}
