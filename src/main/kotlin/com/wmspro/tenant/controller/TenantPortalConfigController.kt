@@ -67,6 +67,26 @@ class TenantPortalConfigController(
     companion object {
         /** Uppercase alphanumeric plus hyphen, 2–32 characters. Mirrors the portal-side validation. */
         private val CODE_PATTERN = Regex("^[A-Z0-9][A-Z0-9-]{1,31}$")
+
+        /**
+         * The HMAC variants a staff token may be signed with, and nothing else.
+         *
+         * This was hardcoded to HmacSHA256, on the reasoning that never reading `alg` defeats
+         * algorithm confusion. Sound reasoning, wrong conclusion: the platform issues **HS384** too
+         * (see JwtTokenExtractor in wms-common), and jjwt — which every other service validates
+         * with — reads `alg` and picks the matching HMAC. Computing SHA-256 unconditionally
+         * rejected every genuine HS384 token, which is exactly what reached production: the admin
+         * screen reported "Authentication required" for a valid staff session.
+         *
+         * An allowlist keeps the protection and drops the false rejection. `none`, `RS*`, `ES*` and
+         * `PS*` are absent, so verification cannot be skipped and a public key cannot be handed to
+         * an HMAC. Every entry uses the same symmetric key.
+         */
+        private val HMAC_BY_ALG = mapOf(
+            "HS256" to "HmacSHA256",
+            "HS384" to "HmacSHA384",
+            "HS512" to "HmacSHA512"
+        )
     }
 
     /**
@@ -126,37 +146,54 @@ class TenantPortalConfigController(
     /**
      * Verifies the token's HMAC and expiry, then returns its claims.
      *
-     * `alg` is deliberately never read. Computing HS256 unconditionally is exactly what makes
-     * `alg: none` and RS256-to-HS256 confusion inert: a token claiming any other algorithm still has
-     * to produce a valid HMAC under this key. [MessageDigest.isEqual] is the length-safe,
-     * non-short-circuiting comparison.
+     * `alg` IS read, but only to select among [HMAC_BY_ALG] — validating it, not dispatching on it.
+     * An absent or unrecognised `alg` is refused, so `none`, RS256-to-HS256 confusion and every
+     * asymmetric algorithm remain impossible, while the HMAC variants the platform actually issues
+     * all verify. [MessageDigest.isEqual] is the length-safe, non-short-circuiting comparison.
+     *
+     * @return the claims, or null if the token is malformed, wrongly signed, expired, or of a kind
+     *   that must not reach this surface.
      */
     private fun verifiedClaims(token: String): Map<String, Any?>? = try {
         val parts = token.split('.')
-        if (parts.size != 3) {
-            null
-        } else {
-            val mac = Mac.getInstance("HmacSHA256")
-            mac.init(SecretKeySpec(jwtSecret.toByteArray(StandardCharsets.UTF_8), "HmacSHA256"))
-            val expected = mac.doFinal("${parts[0]}.${parts[1]}".toByteArray(StandardCharsets.UTF_8))
-
-            if (!MessageDigest.isEqual(expected, Base64.getUrlDecoder().decode(parts[2]))) {
-                logger.warn("Portal-config token rejected: signature does not verify")
-                null
-            } else {
+        when {
+            parts.size != 3 -> null
+            else -> {
                 @Suppress("UNCHECKED_CAST")
-                val claims = mapper.readValue(
-                    Base64.getUrlDecoder().decode(parts[1]), Map::class.java
+                val header = mapper.readValue(
+                    Base64.getUrlDecoder().decode(parts[0]), Map::class.java
                 ) as Map<String, Any?>
 
-                val exp = (claims["exp"] as? Number)?.toLong()
-                val kind = (claims["typ"] as? String) ?: (claims["type"] as? String)
-                when {
-                    exp == null || Instant.now().epochSecond >= exp -> null
-                    // A refresh token is signed with the same secret and would otherwise be a
-                    // long-lived credential for changing a tenant's portal configuration.
-                    kind?.lowercase() in setOf("refresh", "service") -> null
-                    else -> claims
+                val jcaAlgorithm = HMAC_BY_ALG[(header["alg"] as? String)?.uppercase()]
+                if (jcaAlgorithm == null) {
+                    logger.warn("Portal-config token rejected: unsupported alg '{}'", header["alg"])
+                    null
+                } else {
+                    val mac = Mac.getInstance(jcaAlgorithm)
+                    mac.init(SecretKeySpec(jwtSecret.toByteArray(StandardCharsets.UTF_8), jcaAlgorithm))
+                    val expected = mac.doFinal(
+                        "${parts[0]}.${parts[1]}".toByteArray(StandardCharsets.UTF_8)
+                    )
+
+                    if (!MessageDigest.isEqual(expected, Base64.getUrlDecoder().decode(parts[2]))) {
+                        logger.warn("Portal-config token rejected: signature does not verify")
+                        null
+                    } else {
+                        @Suppress("UNCHECKED_CAST")
+                        val claims = mapper.readValue(
+                            Base64.getUrlDecoder().decode(parts[1]), Map::class.java
+                        ) as Map<String, Any?>
+
+                        val exp = (claims["exp"] as? Number)?.toLong()
+                        val kind = (claims["typ"] as? String) ?: (claims["type"] as? String)
+                        when {
+                            exp == null || Instant.now().epochSecond >= exp -> null
+                            // A refresh token is signed with the same secret and would otherwise be
+                            // a long-lived credential for changing a tenant's portal configuration.
+                            kind?.lowercase() in setOf("refresh", "service") -> null
+                            else -> claims
+                        }
+                    }
                 }
             }
         }
