@@ -38,6 +38,7 @@ data class CreateServiceCatalogRequest(
     /** Phase B: optional internal cost per unit. Null = not captured yet. */
     @field:PositiveOrZero(message = "standardCostPerUnit must be ≥ 0")
     val standardCostPerUnit: BigDecimal? = null,
+    val costTreatment: String = "INTERNAL_STANDARD",
 
     @field:NotBlank(message = "freighaiChargeTypeId is required")
     val freighaiChargeTypeId: String,
@@ -69,6 +70,7 @@ data class UpdateServiceCatalogRequest(
     /** Phase B: optional internal cost per unit. Null = not captured yet. */
     @field:PositiveOrZero(message = "standardCostPerUnit must be ≥ 0")
     val standardCostPerUnit: BigDecimal? = null,
+    val costTreatment: String = "INTERNAL_STANDARD",
 
     @field:NotBlank(message = "freighaiChargeTypeId is required")
     val freighaiChargeTypeId: String,
@@ -85,6 +87,7 @@ data class ServiceCatalogResponse(
     val standardRatePerUnit: BigDecimal,
     /** Phase B: optional internal cost per unit. */
     val standardCostPerUnit: BigDecimal?,
+    val costTreatment: String,
     val freighaiChargeTypeId: String,
     val vatPercent: BigDecimal?,
     val isActive: Boolean,

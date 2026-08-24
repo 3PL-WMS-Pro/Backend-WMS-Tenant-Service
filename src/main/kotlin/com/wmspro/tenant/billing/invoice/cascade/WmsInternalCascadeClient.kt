@@ -1,6 +1,9 @@
 package com.wmspro.tenant.billing.invoice.cascade
 
+import com.wmspro.common.billing.ReserveBillingSourceClaimRequest
+import com.wmspro.common.billing.TransitionBillingSourceClaimRequest
 import com.wmspro.common.tenant.TenantContext
+import com.wmspro.tenant.billing.servicelog.ServiceLogBillingClaimService
 import com.wmspro.tenant.billing.servicelog.ServiceLogRepository
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
@@ -37,7 +40,8 @@ import java.time.Instant
 @Component
 class WmsInternalCascadeClient(
     private val restTemplate: RestTemplate,
-    private val serviceLogRepository: ServiceLogRepository
+    private val serviceLogRepository: ServiceLogRepository,
+    private val serviceLogClaimService: ServiceLogBillingClaimService
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -167,6 +171,79 @@ class WmsInternalCascadeClient(
         return CascadeOutcome(grnFails, ginFails, svcFails)
     }
 
+    /** V1-only claim transport.  Callers must never reinterpret a failure as permission to use legacy locks. */
+    fun reserveClaims(
+        receivingRecords: List<BillingClaimTarget>,
+        fulfillmentRecords: List<BillingClaimTarget>,
+        serviceLogs: List<BillingClaimTarget>,
+        requestFor: (BillingClaimTarget) -> ReserveBillingSourceClaimRequest,
+        authToken: String
+    ): ClaimCascadeOutcome {
+        val reserved = mutableListOf<ClaimedBillingSource>()
+        val failures = mutableListOf<String>()
+        fun reserveExternal(kind: BillingSourceKind, target: BillingClaimTarget, base: String, path: String) {
+            val ok = postClaim(base + path.replace("{id}", target.id), requestFor(target), authToken)
+            if (ok) reserved += ClaimedBillingSource(kind, target) else failures += "${kind.name}:${target.id}"
+        }
+        receivingRecords.sortedBy { it.id }.forEach {
+            reserveExternal(BillingSourceKind.GRN, it, inboundServiceUrl, "/api/v1/internal/receiving-records/{id}/billing-claim")
+        }
+        fulfillmentRecords.sortedBy { it.id }.forEach {
+            reserveExternal(BillingSourceKind.GIN, it, orderServiceUrl, "/api/v1/internal/orders/{id}/billing-claim")
+        }
+        serviceLogs.sortedBy { it.id }.forEach { target ->
+            try {
+                serviceLogClaimService.reserve(target.id, requestFor(target))
+                reserved += ClaimedBillingSource(BillingSourceKind.SERVICE_LOG, target)
+            } catch (e: Exception) {
+                logger.error("V1 ServiceLog reserve failed for {}", target.id, e)
+                failures += "SERVICE_LOG:${target.id}"
+            }
+        }
+        return ClaimCascadeOutcome(reserved, failures)
+    }
+
+    fun transitionClaims(
+        claims: List<ClaimedBillingSource>,
+        request: TransitionBillingSourceClaimRequest,
+        commit: Boolean,
+        authToken: String
+    ): List<String> {
+        val failures = mutableListOf<String>()
+        claims.forEach { claimed ->
+            val suffix = if (commit) "/commit" else "/release"
+            val ok = when (claimed.kind) {
+                BillingSourceKind.GRN -> postClaim(
+                    inboundServiceUrl + "/api/v1/internal/receiving-records/${claimed.target.id}/billing-claim$suffix",
+                    request, authToken
+                )
+                BillingSourceKind.GIN -> postClaim(
+                    orderServiceUrl + "/api/v1/internal/orders/${claimed.target.id}/billing-claim$suffix",
+                    request, authToken
+                )
+                BillingSourceKind.SERVICE_LOG -> try {
+                    if (commit) serviceLogClaimService.commit(claimed.target.id, request)
+                    else serviceLogClaimService.release(claimed.target.id, request)
+                    true
+                } catch (e: Exception) {
+                    logger.error("V1 ServiceLog claim transition failed for {}", claimed.target.id, e)
+                    false
+                }
+            }
+            if (!ok) failures += "${claimed.kind.name}:${claimed.target.id}"
+        }
+        return failures
+    }
+
+    private fun postClaim(url: String, body: Any, authToken: String): Boolean = try {
+        restTemplate.exchange(
+            url, HttpMethod.POST, HttpEntity(body, buildInternalHeaders(authToken)), String::class.java
+        ).statusCode.is2xxSuccessful
+    } catch (e: Exception) {
+        logger.error("V1 billing claim call failed url={}", url, e)
+        false
+    }
+
     private fun setLockExternal(
         serviceUrl: String,
         pathTemplate: String,
@@ -227,6 +304,13 @@ class WmsInternalCascadeClient(
             )
         }
     }
+}
+
+data class BillingClaimTarget(val id: String, val sourceLineId: String)
+enum class BillingSourceKind { GRN, GIN, SERVICE_LOG }
+data class ClaimedBillingSource(val kind: BillingSourceKind, val target: BillingClaimTarget)
+data class ClaimCascadeOutcome(val reserved: List<ClaimedBillingSource>, val failures: List<String>) {
+    fun isAllSuccess(expected: Int): Boolean = failures.isEmpty() && reserved.size == expected
 }
 
 /**

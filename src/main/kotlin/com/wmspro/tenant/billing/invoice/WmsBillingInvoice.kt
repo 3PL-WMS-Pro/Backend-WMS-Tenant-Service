@@ -4,6 +4,7 @@ import org.springframework.data.annotation.Id
 import org.springframework.data.mongodb.core.index.CompoundIndex
 import org.springframework.data.mongodb.core.index.Indexed
 import org.springframework.data.mongodb.core.mapping.Document
+import org.springframework.data.mongodb.core.mapping.Field
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDate
@@ -37,6 +38,12 @@ import java.time.LocalDate
 // Old `customer_month_unique_idx` was dropped during the Phase G migration.
 @CompoundIndex(name = "customer_project_month_unique_idx", def = "{'customerId': 1, 'projectCode': 1, 'billingMonth': 1}", unique = true)
 @CompoundIndex(name = "sync_target_idx", def = "{'status': 1, 'freighaiStatus': 1, 'lastSyncedAt': 1}")
+@CompoundIndex(
+    name = "wj_v1_external_reference_uq",
+    def = "{'warehouseJobExternalReference': 1}",
+    unique = true,
+    partialFilter = "{'generationContractVersion': 'WAREHOUSE_JOB_V1'}"
+)
 data class WmsBillingInvoice(
     @Id
     val billingInvoiceId: String,
@@ -113,8 +120,54 @@ data class WmsBillingInvoice(
     val editedLineItems: List<EditedLineItem>? = null,
 
     /** Append-only audit of every hand-edit. Empty for untouched invoices. */
-    val editHistory: List<InvoiceEditEntry> = emptyList()
+    val editHistory: List<InvoiceEditEntry> = emptyList(),
+
+    /** Forward-only Warehouse Job fields. Null/absent means legacy forever. */
+    @Field(write = Field.Write.NON_NULL)
+    val generationContractVersion: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val warehouseJobId: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val warehouseJobNumber: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val warehouseJobExternalReference: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val warehouseJobPayloadVersion: Long? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val warehouseJobPayloadHash: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val warehouseJobCurrencyCode: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val warehouseJobCustomerName: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val warehouseJobSyncState: WarehouseJobSyncState? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val warehouseJobStatus: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val warehouseJobLastSyncedAt: Instant? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val warehouseJobLastError: String? = null
 )
+
+enum class WarehouseJobSyncState { PENDING, SYNCED, FAILED, MANUAL_REVIEW }
+
+/**
+ * FreighAI owns invoice truth; WMS only caches its consequence for Warehouse
+ * Job list/filter UX. Legacy invoices are untouched and an explicitly
+ * cancelled Warehouse Job can never be reopened by a later invoice read.
+ */
+fun deriveWarehouseJobLifecycle(
+    generationContractVersion: String?,
+    currentLifecycle: String?,
+    authoritativeInvoiceStatus: String?
+): String? {
+    if (generationContractVersion != "WAREHOUSE_JOB_V1" || currentLifecycle == "CANCELLED") return currentLifecycle
+    return when (authoritativeInvoiceStatus?.uppercase()) {
+        "DRAFT" -> "ACTIVE"
+        "SENT", "PARTIALLY_PAID", "PAID" -> "BILLED"
+        else -> currentLifecycle
+    }
+}
 
 /**
  * A single line as it exists in FreighAi after an edit. Mirrors FreighAi's
@@ -123,6 +176,8 @@ data class WmsBillingInvoice(
  */
 data class EditedLineItem(
     val lineNo: Int,
+    /** Stable FreighAI line identity. Null only on legacy documents. */
+    val lineId: String? = null,
     val description: String,
     val quantity: BigDecimal,
     val unit: String,
@@ -133,6 +188,8 @@ data class EditedLineItem(
     val vatPercent: BigDecimal?,
     val vatAmount: BigDecimal?,
     val ledgerId: String?,
+    /** Scoped accounting classification for Warehouse Job invoice lines. */
+    val warehouseAccountingCategory: String? = null,
     /** Added by hand in WMS — no aggregator or source record produced it. */
     val isManual: Boolean = false,
     /**

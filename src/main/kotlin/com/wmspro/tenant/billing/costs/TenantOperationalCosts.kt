@@ -36,6 +36,11 @@ data class TenantOperationalCosts(
     /** Cost per CBM for outbound (handling-out) operations. */
     val baseOutboundCostPerCbm: BigDecimal,
 
+    /** Whether each planned cost is expected to be actualized by a partner PI. */
+    val storageCostTreatment: String = "INTERNAL_STANDARD",
+    val inboundCostTreatment: String = "INTERNAL_STANDARD",
+    val outboundCostTreatment: String = "INTERNAL_STANDARD",
+
     val updatedAt: Instant = Instant.now(),
     val updatedBy: String = "system"
 ) {

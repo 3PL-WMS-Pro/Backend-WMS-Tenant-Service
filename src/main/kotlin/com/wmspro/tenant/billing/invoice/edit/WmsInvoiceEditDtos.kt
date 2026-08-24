@@ -35,6 +35,8 @@ data class InvoiceEditableView(
     val grandTotal: BigDecimal?,
     val manuallyEdited: Boolean,
     val editHistory: List<InvoiceEditEntry>,
+    /** True for the forward-only Warehouse Job invoice contract. */
+    val warehouseJobManaged: Boolean,
     /**
      * Opaque snapshot token. The client echoes it back on save; if the invoice
      * moved in the meantime — another admin, or an edit made inside FreighAi —
@@ -47,6 +49,8 @@ data class InvoiceEditableView(
 data class EditableLine(
     /** FreighAi's line number. Identifies this line across an edit. */
     val lineNo: Int,
+    /** Stable FreighAI identity. Null only on legacy invoice lines. */
+    val lineId: String? = null,
     val description: String,
     val quantity: BigDecimal,
     val unit: String,
@@ -57,6 +61,7 @@ data class EditableLine(
     val vatPercent: BigDecimal?,
     val vatAmount: BigDecimal?,
     val ledgerId: String?,
+    val warehouseAccountingCategory: String? = null,
     val isManual: Boolean,
     val isZeroed: Boolean
 )
@@ -88,6 +93,9 @@ data class EditLineRequest(
     /** Null for a newly added line; FreighAi's line number for an existing one. */
     val lineNo: Int? = null,
 
+    /** Echoed for existing lines; assigned by WMS for a new Warehouse line. */
+    val lineId: String? = null,
+
     @field:NotBlank(message = "Description is required")
     @field:Size(max = 500, message = "Description must be at most 500 characters")
     val description: String,
@@ -109,7 +117,9 @@ data class EditLineRequest(
     val chargeTypeId: String? = null,
     val chargeTypeLabel: String? = null,
     val vatPercent: BigDecimal? = null,
-    val ledgerId: String? = null
+    val ledgerId: String? = null,
+    /** Required for new billable lines on a Warehouse Job invoice. */
+    val warehouseAccountingCategory: String? = null
 )
 
 /** Returned after a successful edit. */

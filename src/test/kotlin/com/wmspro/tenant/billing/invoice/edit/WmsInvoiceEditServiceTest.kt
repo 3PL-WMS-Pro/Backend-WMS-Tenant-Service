@@ -2,11 +2,15 @@ package com.wmspro.tenant.billing.invoice.edit
 
 import com.wmspro.common.external.freighai.client.FreighAiInvoiceClient
 import com.wmspro.common.external.freighai.client.InvoiceUpdateResult
+import com.wmspro.common.external.freighai.client.InvoiceAllocationMutationResult
 import com.wmspro.common.external.freighai.client.RevertResult
 import com.wmspro.common.external.freighai.client.SendResult
 import com.wmspro.common.external.freighai.dto.FreighAiInvoiceLineItemResponse
 import com.wmspro.common.external.freighai.dto.FreighAiInvoiceResponse
 import com.wmspro.common.external.freighai.dto.UpdateFreighAiInvoiceRequest
+import com.wmspro.common.external.freighai.dto.FreighAiCurrencyEmbed
+import com.wmspro.common.external.freighai.dto.ReplaceFreighAiJobAllocationsResponse
+import com.wmspro.common.external.freighai.dto.ReplaceFreighAiJobAllocationsRequest
 import com.wmspro.tenant.billing.invoice.BillingInvoiceStatus
 import com.wmspro.tenant.billing.invoice.WmsBillingInvoice
 import com.wmspro.tenant.billing.invoice.WmsBillingInvoiceRepository
@@ -71,6 +75,7 @@ class WmsInvoiceEditServiceTest {
         chargeTypeId: String? = "CHG-1"
     ) = FreighAiInvoiceLineItemResponse(
         lineNo = lineNo,
+        lineId = "line-$lineNo",
         description = desc,
         quantity = BigDecimal(qty),
         unit = "CBM-day",
@@ -376,6 +381,151 @@ class WmsInvoiceEditServiceTest {
         assertThat(result.zeroedLineCount).isEqualTo(1)
         assertThat(result.lines.filter { it.isZeroed }).hasSize(1)
         assertThat(result.lines.first { it.isZeroed }.description).isEqualTo("Handling")
+    }
+
+    @Test
+    fun `Warehouse draft edit sends document revision and rebuilds selling-line allocations`() {
+        val sellingLineId = "0123456789abcdef0123456789abcdef"
+        val local = wmsInvoice().copy(
+            generationContractVersion = "WAREHOUSE_JOB_V1",
+            warehouseJobId = "WJ-1",
+            warehouseJobCurrencyCode = "AED"
+        )
+        val warehouseLine = freighaiLine(1).copy(
+            lineId = sellingLineId,
+            warehouseAccountingCategory = "WAREHOUSE_STORAGE"
+        )
+        val before = freighaiInvoice(lines = listOf(warehouseLine)).copy(
+            documentRevision = 7,
+            allocationRevision = 1,
+            currency = FreighAiCurrencyEmbed("AED")
+        )
+        val after = freighaiInvoice(lines = listOf(warehouseLine.copy(
+            quantity = BigDecimal("12"),
+            amount = BigDecimal("120")
+        ))).copy(
+            documentRevision = 8,
+            allocationRevision = 0,
+            currency = FreighAiCurrencyEmbed("AED")
+        )
+        Mockito.`when`(repository.findById(invoiceId)).thenReturn(Optional.of(local))
+        Mockito.`when`(client.getInvoice(freighaiId, token)).thenReturn(before)
+        val version = currentVersion(before)
+        var updateRequest: UpdateFreighAiInvoiceRequest? = null
+        Mockito.`when`(client.updateInvoice(eqv(freighaiId), anyObj(), eqv(token))).thenAnswer {
+            updateRequest = it.arguments[1] as UpdateFreighAiInvoiceRequest
+            InvoiceUpdateResult.Success(after)
+        }
+        var allocationRequest: ReplaceFreighAiJobAllocationsRequest? = null
+        Mockito.`when`(client.replaceJobAllocationsV1(eqv(freighaiId), anyObj(), anyObj(), eqv(token), anyObj()))
+            .thenAnswer {
+                allocationRequest = it.arguments[1] as ReplaceFreighAiJobAllocationsRequest
+                InvoiceAllocationMutationResult.Success(
+                    ReplaceFreighAiJobAllocationsResponse(freighaiId, 1, BigDecimal("126"), BigDecimal.ZERO)
+                )
+            }
+        Mockito.`when`(repository.save(anyObj<WmsBillingInvoice>())).thenAnswer { it.arguments[0] }
+
+        service.applyEdit(
+            invoiceId,
+            EditInvoiceLinesRequest(
+                listOf(editLine(1, qty = "12").copy(
+                    lineId = sellingLineId,
+                    warehouseAccountingCategory = "WAREHOUSE_STORAGE"
+                )),
+                "corrected quantity",
+                version
+            ),
+            user,
+            token
+        )
+
+        assertThat(updateRequest!!.expectedDocumentRevision).isEqualTo(7)
+        val allocation = allocationRequest!!.allocations.single()
+        assertThat(allocation.jobId).isEqualTo("WJ-1")
+        assertThat(allocation.invoiceLineId).isEqualTo(sellingLineId)
+        assertThat(allocation.jobLineId).isEqualTo(sellingLineId)
+        assertThat(allocation.netAmount).isEqualByComparingTo("120")
+    }
+
+    @Test
+    fun `Warehouse draft edit assigns a stable manual line and allocates it to the job only`() {
+        val sellingLineId = "0123456789abcdef0123456789abcdef"
+        val original = freighaiLine(1).copy(
+            lineId = sellingLineId,
+            warehouseAccountingCategory = "WAREHOUSE_STORAGE"
+        )
+        val local = wmsInvoice().copy(
+            generationContractVersion = "WAREHOUSE_JOB_V1",
+            warehouseJobId = "WJ-1",
+            warehouseJobCurrencyCode = "AED"
+        )
+        val before = freighaiInvoice(lines = listOf(original)).copy(
+            documentRevision = 3,
+            allocationRevision = 1,
+            currency = FreighAiCurrencyEmbed("AED")
+        )
+        Mockito.`when`(repository.findById(invoiceId)).thenReturn(Optional.of(local))
+        Mockito.`when`(client.getInvoice(freighaiId, token)).thenReturn(before)
+        val version = currentVersion(before)
+
+        var updateRequest: UpdateFreighAiInvoiceRequest? = null
+        Mockito.`when`(client.updateInvoice(eqv(freighaiId), anyObj(), eqv(token))).thenAnswer { call ->
+            updateRequest = call.arguments[1] as UpdateFreighAiInvoiceRequest
+            val manual = updateRequest!!.lineItems[1]
+            InvoiceUpdateResult.Success(
+                freighaiInvoice(lines = listOf(
+                    original,
+                    freighaiLine(2, desc = "Weekend labour", qty = "2", price = "25").copy(
+                        lineId = manual.lineId,
+                        amount = BigDecimal("50"),
+                        vatAmount = BigDecimal("2.50"),
+                        warehouseAccountingCategory = manual.warehouseAccountingCategory
+                    )
+                )).copy(
+                    documentRevision = 4,
+                    allocationRevision = 0,
+                    currency = FreighAiCurrencyEmbed("AED")
+                )
+            )
+        }
+        var allocationRequest: ReplaceFreighAiJobAllocationsRequest? = null
+        Mockito.`when`(client.replaceJobAllocationsV1(eqv(freighaiId), anyObj(), anyObj(), eqv(token), anyObj()))
+            .thenAnswer { call ->
+                allocationRequest = call.arguments[1] as ReplaceFreighAiJobAllocationsRequest
+                InvoiceAllocationMutationResult.Success(
+                    ReplaceFreighAiJobAllocationsResponse(freighaiId, 1, BigDecimal("150"), BigDecimal("7.50"))
+                )
+            }
+        Mockito.`when`(repository.save(anyObj<WmsBillingInvoice>())).thenAnswer { it.arguments[0] }
+
+        service.applyEdit(
+            invoiceId,
+            EditInvoiceLinesRequest(
+                listOf(
+                    editLine(1).copy(
+                        lineId = sellingLineId,
+                        warehouseAccountingCategory = "WAREHOUSE_STORAGE"
+                    ),
+                    editLine(null, desc = "Weekend labour", qty = "2", price = "25").copy(
+                        warehouseAccountingCategory = "WAREHOUSE_SERVICE"
+                    )
+                ),
+                "added approved weekend work",
+                version
+            ),
+            user,
+            token
+        )
+
+        val manualLine = updateRequest!!.lineItems[1]
+        assertThat(manualLine.lineId).startsWith("iline_")
+        assertThat(manualLine.warehouseAccountingCategory).isEqualTo("WAREHOUSE_SERVICE")
+        val manualAllocation = allocationRequest!!.allocations.single {
+            it.invoiceLineId == manualLine.lineId
+        }
+        assertThat(manualAllocation.jobId).isEqualTo("WJ-1")
+        assertThat(manualAllocation.jobLineId).isNull()
     }
 
     @Test

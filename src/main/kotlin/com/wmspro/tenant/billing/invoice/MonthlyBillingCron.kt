@@ -1,6 +1,7 @@
 package com.wmspro.tenant.billing.invoice
 
 import com.wmspro.common.tenant.TenantContext
+import com.wmspro.common.mongo.MongoConnectionStorage
 import com.wmspro.tenant.billing.profile.CustomerBillingProfileRepository
 import com.wmspro.tenant.repository.TenantDatabaseMappingRepository
 import org.slf4j.LoggerFactory
@@ -57,10 +58,12 @@ class MonthlyBillingCron(
         for (tenant in tenants) {
             try {
                 TenantContext.setCurrentTenant(tenant.clientId.toString())
+                MongoConnectionStorage.setConnection(tenant.mongoConnection.url)
                 runForOneTenant(billingMonth, tenant.clientId.toString())
             } catch (e: Exception) {
                 logger.error("MonthlyBillingCron: tenant {} failed entirely", tenant.clientId, e)
             } finally {
+                MongoConnectionStorage.clear()
                 TenantContext.clear()
             }
         }

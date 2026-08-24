@@ -71,6 +71,9 @@ data class ServiceCatalog(
     @field:PositiveOrZero(message = "standardCostPerUnit must be ≥ 0")
     val standardCostPerUnit: BigDecimal? = null,
 
+    /** Forward-safe default: existing service costs remain internal standards unless explicitly configured. */
+    val costTreatment: String = "INTERNAL_STANDARD",
+
     /** FK to FreighAi `charge_types._id` (e.g. "CHG-00102"). */
     @field:NotBlank(message = "freighaiChargeTypeId is required")
     @Indexed

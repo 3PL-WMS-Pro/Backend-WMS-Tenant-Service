@@ -141,6 +141,7 @@ class ServiceCatalogController(
         unit = unit,
         standardRatePerUnit = standardRatePerUnit,
         standardCostPerUnit = standardCostPerUnit,
+        costTreatment = costTreatment,
         freighaiChargeTypeId = freighaiChargeTypeId,
         vatPercent = vatPercent,
         isActive = isActive,

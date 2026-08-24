@@ -132,7 +132,17 @@ data class WmsBillingInvoiceResponse(
     /** Post-edit line list as FreighAi holds it. Null for untouched invoices. */
     val editedLineItems: List<EditedLineItem>? = null,
 
-    val editHistory: List<InvoiceEditEntry> = emptyList()
+    val editHistory: List<InvoiceEditEntry> = emptyList(),
+    val generationContractVersion: String? = null,
+    val warehouseJobId: String? = null,
+    val warehouseJobNumber: String? = null,
+    val warehouseJobExternalReference: String? = null,
+    val warehouseJobPayloadVersion: Long? = null,
+    val warehouseJobPayloadHash: String? = null,
+    val warehouseJobSyncState: WarehouseJobSyncState? = null,
+    val warehouseJobStatus: String? = null,
+    val warehouseJobLastSyncedAt: Instant? = null,
+    val warehouseJobLastError: String? = null
 )
 
 /**

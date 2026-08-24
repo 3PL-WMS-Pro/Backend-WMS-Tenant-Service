@@ -16,13 +16,19 @@ data class UpsertTenantOperationalCostsRequest(
 
     @field:NotNull(message = "baseOutboundCostPerCbm is required")
     @field:PositiveOrZero(message = "baseOutboundCostPerCbm must be ≥ 0")
-    val baseOutboundCostPerCbm: BigDecimal
+    val baseOutboundCostPerCbm: BigDecimal,
+    val storageCostTreatment: String = "INTERNAL_STANDARD",
+    val inboundCostTreatment: String = "INTERNAL_STANDARD",
+    val outboundCostTreatment: String = "INTERNAL_STANDARD"
 )
 
 data class TenantOperationalCostsResponse(
     val baseStorageCostPerCbmDay: BigDecimal,
     val baseInboundCostPerCbm: BigDecimal,
     val baseOutboundCostPerCbm: BigDecimal,
+    val storageCostTreatment: String,
+    val inboundCostTreatment: String,
+    val outboundCostTreatment: String,
     val updatedAt: Instant,
     val updatedBy: String,
     val isConfigured: Boolean

@@ -22,11 +22,22 @@ class TenantOperationalCostsService(
                 baseStorageCostPerCbmDay = request.baseStorageCostPerCbmDay,
                 baseInboundCostPerCbm = request.baseInboundCostPerCbm,
                 baseOutboundCostPerCbm = request.baseOutboundCostPerCbm,
+                storageCostTreatment = validateTreatment(request.storageCostTreatment),
+                inboundCostTreatment = validateTreatment(request.inboundCostTreatment),
+                outboundCostTreatment = validateTreatment(request.outboundCostTreatment),
                 updatedAt = Instant.now(),
                 updatedBy = userEmail
             )
         )
         logger.info("TenantOperationalCosts upserted by={}", userEmail)
         return saved
+    }
+
+    private fun validateTreatment(value: String): String {
+        val normalized = value.trim().uppercase()
+        require(normalized in setOf("PARTNER_INVOICE", "INTERNAL_STANDARD")) {
+            "Cost treatment must be PARTNER_INVOICE or INTERNAL_STANDARD"
+        }
+        return normalized
     }
 }

@@ -51,10 +51,14 @@ class WmsInvoiceSyncService(
                 // 100.00 are the same money but not the same object.
                 val totalsMoved = freighai.grandTotal != null
                     && inv.grandTotal.compareTo(freighai.grandTotal) != 0
+                val warehouseLifecycle = deriveWarehouseJobLifecycle(
+                    inv.generationContractVersion, inv.warehouseJobStatus, freighai.currentStatus
+                )
                 val changed = inv.freighaiStatus != freighai.currentStatus
                     || inv.freighaiInvoiceDate != freighai.invoiceDate
                     || inv.freighaiDueDate != freighai.dueDate
                     || inv.freighaiOutstandingAmount != freighai.outstandingAmount
+                    || inv.warehouseJobStatus != warehouseLifecycle
                     || totalsMoved
 
                 // Field-scoped $set rather than a whole-document save. `inv` was
@@ -69,6 +73,9 @@ class WmsInvoiceSyncService(
                     .set("freighaiDueDate", freighai.dueDate)
                     .set("freighaiOutstandingAmount", freighai.outstandingAmount)
                     .set("lastSyncedAt", Instant.now())
+                if (inv.generationContractVersion == "WAREHOUSE_JOB_V1") {
+                    update.set("warehouseJobStatus", warehouseLifecycle)
+                }
                 freighai.subtotal?.let { update.set("subtotal", it) }
                 freighai.totalVatAmount?.let { update.set("totalVat", it) }
                 freighai.grandTotal?.let { update.set("grandTotal", it) }

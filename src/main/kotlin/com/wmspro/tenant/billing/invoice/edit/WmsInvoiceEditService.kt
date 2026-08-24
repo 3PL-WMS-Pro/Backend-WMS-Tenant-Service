@@ -2,22 +2,31 @@ package com.wmspro.tenant.billing.invoice.edit
 
 import com.wmspro.common.external.freighai.client.FreighAiInvoiceClient
 import com.wmspro.common.external.freighai.client.InvoiceUpdateResult
+import com.wmspro.common.external.freighai.client.InvoiceAllocationLookupResult
+import com.wmspro.common.external.freighai.client.InvoiceAllocationMutationResult
 import com.wmspro.common.external.freighai.client.RevertResult
 import com.wmspro.common.external.freighai.client.SendResult
 import com.wmspro.common.external.freighai.dto.FreighAiInvoiceLineItem
 import com.wmspro.common.external.freighai.dto.FreighAiInvoiceLineItemResponse
 import com.wmspro.common.external.freighai.dto.FreighAiInvoiceResponse
 import com.wmspro.common.external.freighai.dto.UpdateFreighAiInvoiceRequest
+import com.wmspro.common.external.freighai.dto.FreighAiJobAllocationItem
+import com.wmspro.common.external.freighai.dto.FreighAiJobAllocationResponse
+import com.wmspro.common.external.freighai.dto.ReplaceFreighAiJobAllocationsRequest
+import com.wmspro.common.billing.WarehouseJobGenerationContracts
 import com.wmspro.tenant.billing.invoice.BillingInvoiceStatus
 import com.wmspro.tenant.billing.invoice.EditedFieldChange
 import com.wmspro.tenant.billing.invoice.EditedLineItem
 import com.wmspro.tenant.billing.invoice.InvoiceEditEntry
 import com.wmspro.tenant.billing.invoice.WmsBillingInvoice
 import com.wmspro.tenant.billing.invoice.WmsBillingInvoiceRepository
+import com.wmspro.tenant.billing.invoice.deriveWarehouseJobLifecycle
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Instant
 
 /**
@@ -71,6 +80,13 @@ class WmsInvoiceEditService(
         /** FreighAi statuses whose lines can still be changed. */
         val EDITABLE_DIRECT = setOf("DRAFT")
         val EDITABLE_VIA_REVERT = setOf("SENT")
+        val WAREHOUSE_ACCOUNTING_CATEGORIES = setOf(
+            "WAREHOUSE_STORAGE",
+            "WAREHOUSE_INBOUND",
+            "WAREHOUSE_OUTBOUND",
+            "WAREHOUSE_SERVICE"
+        )
+        val WAREHOUSE_SELLING_LINE_ID = Regex("^[0-9a-f]{32}$")
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -126,6 +142,7 @@ class WmsInvoiceEditService(
             grandTotal = freighai.grandTotal,
             manuallyEdited = invoice.manuallyEdited,
             editHistory = invoice.editHistory,
+            warehouseJobManaged = invoice.generationContractVersion == WarehouseJobGenerationContracts.V1,
             baseVersion = versionOf(freighai)
         )
     }
@@ -185,9 +202,12 @@ class WmsInvoiceEditService(
         }
 
         val currentLines = mergeLines(before, invoice)
+        // Run the public line-number contract first so duplicate/missing/stale
+        // requests receive the established, actionable error messages.
         validateNoRemovals(currentLines, request.lines)
+        val submittedLines = prepareSubmittedLines(invoice, currentLines, request)
 
-        val payloadLines = request.lines.filter { amountOf(it).signum() > 0 }
+        val payloadLines = submittedLines.filter { amountOf(it).signum() > 0 }
         if (payloadLines.isEmpty()) {
             throw InvoiceEditConflictException(
                 "Every line is zero — an invoice must keep at least one billable line. " +
@@ -215,11 +235,26 @@ class WmsInvoiceEditService(
             }
         }
 
+        val genericUpdateBase = if (
+            invoice.generationContractVersion == WarehouseJobGenerationContracts.V1 && needsRevert
+        ) {
+            freighAiInvoiceClient.getInvoice(freighaiInvoiceId, authToken)
+                ?: throw InvoiceEditConflictException(
+                    "The invoice was reverted to draft, but its new revision could not be read. " +
+                        "Open it in FreighAI before retrying."
+                )
+        } else before
+
         // ── Push the new line list ──────────────────────────────────────
         val updated = when (
             val result = freighAiInvoiceClient.updateInvoice(
                 freighaiInvoiceId,
-                UpdateFreighAiInvoiceRequest(lineItems = payloadLines.map { it.toFreighAiLine() }),
+                UpdateFreighAiInvoiceRequest(
+                    lineItems = payloadLines.map { it.toFreighAiLine() },
+                    expectedDocumentRevision = if (
+                        invoice.generationContractVersion == WarehouseJobGenerationContracts.V1
+                    ) genericUpdateBase.documentRevision else null
+                ),
                 authToken
             )
         ) {
@@ -245,6 +280,10 @@ class WmsInvoiceEditService(
                         if (needsRevert) " — it may be sitting in draft." else "."
                 )
             }
+        }
+
+        if (invoice.generationContractVersion == WarehouseJobGenerationContracts.V1) {
+            rebuildWarehouseAllocations(invoice, updated, authToken)
         }
 
         // ── Put it back in front of the customer ────────────────────────
@@ -281,8 +320,8 @@ class WmsInvoiceEditService(
             updated
         }
 
-        val zeroedLines = request.lines.filter { amountOf(it).signum() == 0 }
-        val persistedLines = buildPersistedLines(authoritative, zeroedLines, request.lines, invoice)
+        val zeroedLines = submittedLines.filter { amountOf(it).signum() == 0 }
+        val persistedLines = buildPersistedLines(authoritative, zeroedLines, submittedLines, invoice)
 
         // Re-read before writing. `invoice` was loaded before three external
         // calls, and the status sync (or a concurrent edit) may have written to
@@ -304,12 +343,15 @@ class WmsInvoiceEditService(
                 freighaiInvoiceDate = authoritative.invoiceDate ?: current.freighaiInvoiceDate,
                 freighaiDueDate = authoritative.dueDate ?: current.freighaiDueDate,
                 freighaiOutstandingAmount = authoritative.outstandingAmount,
+                warehouseJobStatus = deriveWarehouseJobLifecycle(
+                    current.generationContractVersion, current.warehouseJobStatus, authoritative.currentStatus
+                ),
                 lastSyncedAt = Instant.now(),
                 editHistory = current.editHistory + InvoiceEditEntry(
                     editedAt = Instant.now(),
                     editedBy = userEmail,
                     reason = reason,
-                    changes = diff(currentLines, request.lines),
+                    changes = diff(currentLines, submittedLines),
                     freighaiStatusBefore = before.currentStatus,
                     subtotalBefore = before.subtotal,
                     subtotalAfter = authoritative.subtotal,
@@ -391,6 +433,7 @@ class WmsInvoiceEditService(
         val live = freighai.lineItems.map { line ->
             EditableLine(
                 lineNo = line.lineNo,
+                lineId = line.lineId,
                 description = line.description,
                 quantity = line.quantity,
                 unit = line.unit,
@@ -401,6 +444,7 @@ class WmsInvoiceEditService(
                 vatPercent = line.vatPercent,
                 vatAmount = line.vatAmount,
                 ledgerId = line.ledgerId,
+                warehouseAccountingCategory = line.warehouseAccountingCategory,
                 // Display-only badge; a miss just means no badge.
                 isManual = storedByKey[manualKey(line.description, line.chargeTypeId)]?.isManual ?: false,
                 isZeroed = false
@@ -413,6 +457,7 @@ class WmsInvoiceEditService(
             .mapIndexed { idx, it ->
                 EditableLine(
                     lineNo = nextLineNo + idx,
+                    lineId = it.lineId,
                     description = it.description,
                     quantity = it.quantity,
                     unit = it.unit,
@@ -423,6 +468,7 @@ class WmsInvoiceEditService(
                     vatPercent = it.vatPercent,
                     vatAmount = BigDecimal.ZERO,
                     ledgerId = it.ledgerId,
+                    warehouseAccountingCategory = it.warehouseAccountingCategory,
                     isManual = it.isManual,
                     isZeroed = true
                 )
@@ -433,6 +479,81 @@ class WmsInvoiceEditService(
 
     private fun manualKey(description: String, chargeTypeId: String?) =
         "${description.trim().lowercase()}|${chargeTypeId.orEmpty()}"
+
+    /**
+     * Re-hydrates server-owned line metadata before an update. Generic
+     * Warehouse invoices reject index-based identities, so original lines
+     * must echo their stable ID and an ad-hoc line gets a retry-stable ID.
+     */
+    private fun prepareSubmittedLines(
+        invoice: WmsBillingInvoice,
+        current: List<EditableLine>,
+        request: EditInvoiceLinesRequest
+    ): List<EditLineRequest> {
+        val warehouseManaged = invoice.generationContractVersion == WarehouseJobGenerationContracts.V1
+        val currentByNo = current.associateBy { it.lineNo }
+        val prepared = request.lines.mapIndexed { index, line ->
+            val existing = line.lineNo?.let(currentByNo::get)
+            if (existing?.lineId != null && line.lineId != null && existing.lineId != line.lineId.trim()) {
+                throw InvoiceEditConflictException(
+                    "This invoice changed since you opened it — line ${line.lineNo} has a different identity."
+                )
+            }
+            if (existing?.warehouseAccountingCategory != null && line.warehouseAccountingCategory != null &&
+                existing.warehouseAccountingCategory != line.warehouseAccountingCategory
+            ) {
+                throw InvoiceEditConflictException(
+                    "The accounting category of existing line ${line.lineNo} cannot be changed."
+                )
+            }
+
+            val stableLineId = when {
+                existing != null -> existing.lineId
+                warehouseManaged -> manualWarehouseLineId(invoice.billingInvoiceId, request.baseVersion, index, line)
+                else -> line.lineId?.trim()?.takeIf(String::isNotEmpty)
+            }
+            val category = existing?.warehouseAccountingCategory
+                ?: line.warehouseAccountingCategory?.trim()?.takeIf(String::isNotEmpty)
+            line.copy(lineId = stableLineId, warehouseAccountingCategory = category)
+        }
+
+        val duplicateIds = prepared.mapNotNull { it.lineId }.groupingBy { it }.eachCount()
+            .filterValues { it > 1 }.keys
+        if (duplicateIds.isNotEmpty()) {
+            throw InvoiceEditConflictException("Stable invoice line identities must be unique.")
+        }
+        if (warehouseManaged) {
+            prepared.firstOrNull {
+                amountOf(it).signum() > 0 && it.warehouseAccountingCategory !in WAREHOUSE_ACCOUNTING_CATEGORIES
+            }?.let {
+                throw InvoiceEditConflictException(
+                    "Line \"${it.description}\" needs a warehouse accounting category."
+                )
+            }
+        }
+        return prepared
+    }
+
+    private fun manualWarehouseLineId(
+        billingInvoiceId: String,
+        baseVersion: String,
+        index: Int,
+        line: EditLineRequest
+    ): String {
+        val material = listOf(
+            billingInvoiceId,
+            baseVersion,
+            index.toString(),
+            line.description.trim(),
+            line.chargeTypeId.orEmpty(),
+            line.quantity.stripTrailingZeros().toPlainString(),
+            line.unitPrice.stripTrailingZeros().toPlainString()
+        ).joinToString("|")
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(material.toByteArray(StandardCharsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return "iline_${digest.take(32)}"
+    }
 
     /**
      * Removal is not supported, so every line currently on the invoice must
@@ -472,6 +593,7 @@ class WmsInvoiceEditService(
         line.quantity.multiply(line.unitPrice).setScale(2, RoundingMode.HALF_UP)
 
     private fun EditLineRequest.toFreighAiLine() = FreighAiInvoiceLineItem(
+        lineId = lineId,
         description = description,
         quantity = quantity,
         unit = unit,
@@ -483,7 +605,8 @@ class WmsInvoiceEditService(
             amountOf(this).multiply(it).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
         },
         chargeTypeLabel = chargeTypeLabel,
-        ledgerId = ledgerId
+        ledgerId = ledgerId,
+        warehouseAccountingCategory = warehouseAccountingCategory
     )
 
     /**
@@ -515,6 +638,7 @@ class WmsInvoiceEditService(
         val withheld = zeroed.mapIndexed { idx, line ->
             EditedLineItem(
                 lineNo = nextLineNo + idx,
+                lineId = line.lineId,
                 description = line.description,
                 quantity = line.quantity,
                 unit = line.unit,
@@ -525,6 +649,7 @@ class WmsInvoiceEditService(
                 vatPercent = line.vatPercent,
                 vatAmount = BigDecimal.ZERO,
                 ledgerId = line.ledgerId,
+                warehouseAccountingCategory = line.warehouseAccountingCategory,
                 isManual = line.lineNo == null
                     || manualKey(line.description, line.chargeTypeId) in previouslyManual,
                 isZeroed = true
@@ -535,6 +660,7 @@ class WmsInvoiceEditService(
 
     private fun FreighAiInvoiceLineItemResponse.toEdited(manualKeys: Set<String>) = EditedLineItem(
         lineNo = lineNo,
+        lineId = lineId,
         description = description,
         quantity = quantity,
         unit = unit,
@@ -545,6 +671,7 @@ class WmsInvoiceEditService(
         vatPercent = vatPercent,
         vatAmount = vatAmount,
         ledgerId = ledgerId,
+        warehouseAccountingCategory = warehouseAccountingCategory,
         isManual = manualKey(description, chargeTypeId) in manualKeys,
         isZeroed = false
     )
@@ -557,6 +684,7 @@ class WmsInvoiceEditService(
     private fun versionOf(freighai: FreighAiInvoiceResponse): String =
         listOf(
             freighai.currentStatus.orEmpty(),
+            freighai.documentRevision.toString(),
             freighai.lineItems.size.toString(),
             freighai.grandTotal?.stripTrailingZeros()?.toPlainString().orEmpty(),
             // Every field the edit screen can change has to be in the token.
@@ -566,6 +694,7 @@ class WmsInvoiceEditService(
             freighai.lineItems.joinToString(",") {
                 listOf(
                     it.lineNo.toString(),
+                    it.lineId.orEmpty(),
                     it.amount.stripTrailingZeros().toPlainString(),
                     it.quantity.stripTrailingZeros().toPlainString(),
                     it.unitPrice.stripTrailingZeros().toPlainString(),
@@ -573,10 +702,88 @@ class WmsInvoiceEditService(
                     it.unit,
                     it.chargeTypeId.orEmpty(),
                     it.vatPercent?.stripTrailingZeros()?.toPlainString().orEmpty(),
-                    it.ledgerId.orEmpty()
+                    it.ledgerId.orEmpty(),
+                    it.warehouseAccountingCategory.orEmpty()
                 ).joinToString(":")
             }
         ).joinToString("|")
+
+    private fun rebuildWarehouseAllocations(
+        local: WmsBillingInvoice,
+        remote: FreighAiInvoiceResponse,
+        authToken: String
+    ) {
+        val jobId = local.warehouseJobId
+            ?: throw InvoiceEditConflictException("Warehouse Job binding is missing; allocations cannot be rebuilt.")
+        val currency = remote.currency?.code ?: local.warehouseJobCurrencyCode
+            ?: throw InvoiceEditConflictException("Invoice currency is unavailable; allocations cannot be rebuilt.")
+        val expected = remote.lineItems.map { line ->
+            val lineId = line.lineId
+                ?: throw InvoiceEditConflictException("FreighAI returned a generic invoice line without a stable line ID.")
+            val vat = line.vatAmount ?: BigDecimal.ZERO
+            FreighAiJobAllocationItem(
+                allocationKey = "sales:${remote.invoiceId}:$lineId:$jobId",
+                invoiceLineId = lineId,
+                target = "JOB",
+                jobId = jobId,
+                // Original WMS selling lines use the 32-hex payload identity.
+                // Manual invoice-only additions use `iline_...` and therefore
+                // link to the Job without pretending to be an operational line.
+                jobLineId = lineId.takeIf { WAREHOUSE_SELLING_LINE_ID.matches(it) },
+                netAmount = line.amount,
+                vatAmount = vat,
+                grossAmount = line.amount.add(vat),
+                documentCurrency = currency,
+                baseCurrency = currency,
+                baseNetAmount = line.amount,
+                baseVatAmount = vat,
+                baseGrossAmount = line.amount.add(vat)
+            )
+        }
+        when (val result = freighAiInvoiceClient.replaceJobAllocationsV1(
+            remote.invoiceId,
+            ReplaceFreighAiJobAllocationsRequest(remote.allocationRevision, expected),
+            "wms-edit:${remote.invoiceId}:${remote.documentRevision}",
+            authToken,
+            "wms-invoice-edit"
+        )) {
+            is InvoiceAllocationMutationResult.Success -> return
+            is InvoiceAllocationMutationResult.Rejected -> {
+                val actual = freighAiInvoiceClient.getJobAllocationsV1(remote.invoiceId, authToken)
+                if (actual is InvoiceAllocationLookupResult.Found && allocationsMatch(actual.allocations, expected)) return
+                throw InvoiceEditConflictException(
+                    "The invoice lines were updated, but Warehouse Job allocations could not be rebuilt: ${result.errorMessage}. " +
+                        "The invoice remains in draft for recovery."
+                )
+            }
+            is InvoiceAllocationMutationResult.Indeterminate -> {
+                val actual = freighAiInvoiceClient.getJobAllocationsV1(remote.invoiceId, authToken)
+                if (actual is InvoiceAllocationLookupResult.Found && allocationsMatch(actual.allocations, expected)) return
+                throw InvoiceEditConflictException(
+                    "The invoice lines were updated, but the allocation result is uncertain: ${result.errorMessage}. " +
+                        "The invoice remains in draft for recovery."
+                )
+            }
+        }
+    }
+
+    private fun allocationsMatch(
+        actual: List<FreighAiJobAllocationResponse>,
+        expected: List<FreighAiJobAllocationItem>
+    ): Boolean {
+        if (actual.size != expected.size) return false
+        val byKey = actual.associateBy { it.allocationKey }
+        return expected.all { wanted ->
+            byKey[wanted.allocationKey]?.let { found ->
+                found.invoiceLineId == wanted.invoiceLineId &&
+                    found.jobId == wanted.jobId &&
+                    found.jobLineId == wanted.jobLineId &&
+                    found.netAmount.compareTo(wanted.netAmount) == 0 &&
+                    found.vatAmount.compareTo(wanted.vatAmount) == 0 &&
+                    found.grossAmount.compareTo(wanted.grossAmount) == 0
+            } == true
+        }
+    }
 
     /** Field-level diff for the audit trail. */
     private fun diff(before: List<EditableLine>, after: List<EditLineRequest>): List<EditedFieldChange> {
@@ -659,6 +866,7 @@ class WmsInvoiceEditService(
         grandTotal = invoice.grandTotal,
         manuallyEdited = invoice.manuallyEdited,
         editHistory = invoice.editHistory,
+        warehouseJobManaged = invoice.generationContractVersion == WarehouseJobGenerationContracts.V1,
         baseVersion = ""
     )
 }

@@ -124,10 +124,14 @@ class WmsInvoiceController(
         // does NOT update by itself — leaving it stale lets the hourly sync cron
         // pick the row up next time, which is the right freshness contract.
         val updatedInvoice = freighaiData?.let { f ->
+            val warehouseLifecycle = deriveWarehouseJobLifecycle(
+                invoice.generationContractVersion, invoice.warehouseJobStatus, f.currentStatus
+            )
             val changed = invoice.freighaiStatus != f.currentStatus
                 || invoice.freighaiInvoiceDate != f.invoiceDate
                 || invoice.freighaiDueDate != f.dueDate
                 || invoice.freighaiOutstandingAmount != f.outstandingAmount
+                || invoice.warehouseJobStatus != warehouseLifecycle
             if (changed) {
                 invoiceRepository.save(
                     invoice.copy(
@@ -135,6 +139,7 @@ class WmsInvoiceController(
                         freighaiInvoiceDate = f.invoiceDate,
                         freighaiDueDate = f.dueDate,
                         freighaiOutstandingAmount = f.outstandingAmount,
+                        warehouseJobStatus = warehouseLifecycle,
                         lastSyncedAt = Instant.now()
                     )
                 )
@@ -212,6 +217,9 @@ class WmsInvoiceController(
                 freighaiInvoiceDate = freighai.invoiceDate,
                 freighaiDueDate = freighai.dueDate,
                 freighaiOutstandingAmount = freighai.outstandingAmount,
+                warehouseJobStatus = deriveWarehouseJobLifecycle(
+                    invoice.generationContractVersion, invoice.warehouseJobStatus, freighai.currentStatus
+                ),
                 lastSyncedAt = Instant.now()
             )
         )
@@ -242,6 +250,9 @@ class WmsInvoiceController(
                             freighaiStatus = it.currentStatus,
                             freighaiInvoiceDate = it.invoiceDate,
                             freighaiDueDate = it.dueDate,
+                            warehouseJobStatus = deriveWarehouseJobLifecycle(
+                                invoice.generationContractVersion, invoice.warehouseJobStatus, it.currentStatus
+                            ),
                             lastSyncedAt = Instant.now()
                         )
                     )

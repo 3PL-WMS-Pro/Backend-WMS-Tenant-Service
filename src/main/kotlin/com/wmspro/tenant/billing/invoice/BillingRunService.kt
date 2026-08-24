@@ -33,6 +33,7 @@ import com.wmspro.tenant.billing.snapshot.BillingRunCostSnapshotRepository
 import com.wmspro.tenant.billing.snapshot.CostAdjustmentSnapshot
 import com.wmspro.tenant.billing.snapshot.SnapshotRef
 import com.wmspro.tenant.billing.snapshot.SnapshotSourceType
+import com.wmspro.tenant.billing.warehousejob.orchestration.WarehouseJobGenerationService
 import com.wmspro.tenant.dto.GetOrAssignRequestItem
 import com.wmspro.tenant.repository.AccountIdMappingRepository
 import com.wmspro.tenant.service.AccountIdMappingService
@@ -47,6 +48,7 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import java.security.MessageDigest
 
 /**
  * BillingRunService — orchestrates the per-(customer, month) billing run.
@@ -89,7 +91,9 @@ class BillingRunService(
     private val tenantBillingDefaultsService: TenantBillingDefaultsService,
     private val tenantOperationalCostsService: TenantOperationalCostsService,
     private val costSnapshotRepository: BillingRunCostSnapshotRepository,
-    private val movementCostAdjustmentService: MovementCostAdjustmentService
+    private val movementCostAdjustmentService: MovementCostAdjustmentService,
+    private val warehouseJobGenerationService: WarehouseJobGenerationService,
+    private val customerNameResolver: CustomerNameResolver
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -242,7 +246,13 @@ class BillingRunService(
             ?: sliceMovement.firstOrNull { it.projectLabel != null }?.projectLabel
 
         // Idempotency: per (customer, project, month).
+        var tupleWasLegacy = false
         invoiceRepository.findByCustomerIdAndProjectCodeAndBillingMonth(customerId, projectCode, billingMonth)?.let { existing ->
+            if (existing.generationContractVersion == "WAREHOUSE_JOB_V1") {
+                logger.info("generate: idempotent V1 return for ({}, {}, {})", customerId, projectCode ?: "default", billingMonth)
+                return existing
+            }
+            tupleWasLegacy = true
             if (existing.status == BillingInvoiceStatus.SUBMITTED) {
                 logger.info(
                     "generate: idempotent return for ({}, {}, {}) → {}",
@@ -267,7 +277,15 @@ class BillingRunService(
             invoiceRepository.deleteById(existing.billingInvoiceId)
         }
 
-        val billingInvoiceId = "wmsinv_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+        // The routing decision is made once, before any claim/write. Existing
+        // unmarked tuples remain legacy even if their row is deleted as part
+        // of the existing retry semantics above.
+        val useWarehouseJobV1 = !tupleWasLegacy
+        val billingInvoiceId = if (useWarehouseJobV1) {
+            "wmsinv_${stableHash("$customerId|${projectCode ?: "DEFAULT"}|$billingMonth").take(16)}"
+        } else {
+            "wmsinv_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+        }
         val referenceNo = "WMS-$customerId-${projectCode ?: "default"}-$billingMonth"
 
         // Pre-create DRAFT row.
@@ -290,14 +308,44 @@ class BillingRunService(
             generatedBy = triggeredBy,
             submissionAttempts = emptyList()
         )
-        draft = invoiceRepository.save(draft)
-
-        // Lock cascade — only this slice's GRN/GIN/ServiceLog IDs.
+        // Lock/claim only this slice's GRN/GIN/ServiceLog IDs.
         val grnIds = sliceMovement.filter { it.direction == MovementDirection.INBOUND }
             .flatMap { it.sourceRecordIds }.distinct()
         val ginIds = sliceMovement.filter { it.direction == MovementDirection.OUTBOUND }
             .flatMap { it.sourceRecordIds }.distinct()
         val serviceLogIds = sliceService.flatMap { it.serviceLogIds }.distinct()
+
+        // Slice context for FreighAi line item generation + cost snapshot writes.
+        val sliceContext = fullContext.copy(
+            storageLines = sliceStorage,
+            movementLines = sliceMovement,
+            serviceLines = sliceService,
+            subtotal = subtotal,
+            totalVat = totalVat,
+            grandTotal = grandTotal,
+            minimumChargeApplied = sliceMinimumApplied
+        )
+
+        if (useWarehouseJobV1) {
+            val prepared = buildCostSnapshots(billingInvoiceId, customerId, billingMonth, sliceContext)
+            val customerName = customerNameResolver.resolve(setOf(customerId), authToken)[customerId]
+                ?: throw IllegalStateException("Warehouse Job generation could not resolve customer name for customerId=$customerId")
+            val freighAiCustomerId = accountIdMappingRepository.findById(customerId).orElse(null)?.freighaiCustomerId
+                ?: throw IllegalStateException("No FreighAi customerId mapping for customerId=$customerId")
+            return warehouseJobGenerationService.generateNewTuple(
+                candidateInvoice = draft,
+                candidateSnapshots = prepared.snapshots,
+                movementAdjustmentIds = prepared.adjustmentIds,
+                customerName = customerName,
+                freighAiCustomerId = freighAiCustomerId,
+                currencyId = aedCurrencyId,
+                authToken = authToken,
+                correlationId = "wjgen-${UUID.randomUUID()}"
+            )
+        }
+
+        // Legacy path begins only after the immutable cutover decision above.
+        draft = invoiceRepository.save(draft)
 
         val cascadeOutcome = cascadeClient.setLocks(
             billingInvoiceId = billingInvoiceId,
@@ -323,17 +371,6 @@ class BillingRunService(
                 "Lock cascade failed for ${projectCode ?: "default"} (${cascadeOutcome.summary()}); marked as SUBMISSION_FAILED."
             )
         }
-
-        // Slice context for FreighAi line item generation + cost snapshot writes.
-        val sliceContext = fullContext.copy(
-            storageLines = sliceStorage,
-            movementLines = sliceMovement,
-            serviceLines = sliceService,
-            subtotal = subtotal,
-            totalVat = totalVat,
-            grandTotal = grandTotal,
-            minimumChargeApplied = sliceMinimumApplied
-        )
 
         val existingFreighai = freighAiInvoiceClient.findInvoiceByReferenceNo(referenceNo, authToken)
         val freighaiInvoiceId: String
@@ -473,6 +510,11 @@ class BillingRunService(
     ): WmsBillingInvoice {
         val invoice = invoiceRepository.findById(billingInvoiceId).orElseThrow {
             IllegalArgumentException("WmsBillingInvoice '$billingInvoiceId' not found")
+        }
+        if (invoice.generationContractVersion == "WAREHOUSE_JOB_V1") {
+            throw IllegalStateException(
+                "WAREHOUSE_JOB_V1 cancellation must use the Warehouse Job recovery workflow; legacy snapshot deletion is forbidden"
+            )
         }
         if (invoice.status == BillingInvoiceStatus.CANCELLED) return invoice
 
@@ -961,6 +1003,22 @@ class BillingRunService(
         billingMonth: String,
         context: BillingContext
     ) {
+        val prepared = buildCostSnapshots(billingInvoiceId, customerId, billingMonth, context)
+        if (prepared.snapshots.isNotEmpty()) {
+            costSnapshotRepository.saveAll(prepared.snapshots)
+            logger.info("Cost snapshots: wrote {} for invoice {}", prepared.snapshots.size, billingInvoiceId)
+        }
+        if (prepared.adjustmentIds.isNotEmpty()) {
+            movementCostAdjustmentService.lockToBillingInvoice(prepared.adjustmentIds, billingInvoiceId)
+        }
+    }
+
+    private fun buildCostSnapshots(
+        billingInvoiceId: String,
+        customerId: Long,
+        billingMonth: String,
+        context: BillingContext
+    ): PreparedCostSnapshots {
         val tenantCosts = context.tenantCostDefaults
         val storageBaseCost = tenantCosts?.baseStorageCostPerCbmDay
         val inboundBaseCost = tenantCosts?.baseInboundCostPerCbm
@@ -992,7 +1050,9 @@ class BillingRunService(
                 totalCost = totalCost,
                 revenueRate = line.ratePerDay,
                 revenueAmount = line.amount,
-                margin = margin
+                margin = margin,
+                costTreatment = tenantCosts?.storageCostTreatment ?: "INTERNAL_STANDARD",
+                freighaiChargeTypeId = line.freighaiChargeTypeId
             )
         }
 
@@ -1043,7 +1103,12 @@ class BillingRunService(
                     totalCost = totalCost,
                     revenueRate = line.ratePerCbm,
                     revenueAmount = revenueAmount,
-                    margin = margin
+                    margin = margin,
+                    costTreatment = when (line.direction) {
+                        MovementDirection.INBOUND -> tenantCosts?.inboundCostTreatment
+                        MovementDirection.OUTBOUND -> tenantCosts?.outboundCostTreatment
+                    } ?: "INTERNAL_STANDARD",
+                    freighaiChargeTypeId = line.freighaiChargeTypeId
                 )
                 adjustmentsToLock += recAdjustments.map { it.adjustmentId }
             }
@@ -1081,7 +1146,7 @@ class BillingRunService(
                         number = null
                     ),
                     serviceCode = line.serviceCode,
-                    projectCode = null,
+                    projectCode = line.projectCode,
                     quantity = entry.quantity,
                     unit = cat.unit,
                     baseCostRate = baseCost,
@@ -1090,32 +1155,26 @@ class BillingRunService(
                     totalCost = totalCost,
                     revenueRate = perLogRate,
                     revenueAmount = revenueAmount,
-                    margin = margin
+                    margin = margin,
+                    costTreatment = cat.costTreatment,
+                    freighaiChargeTypeId = line.freighaiChargeTypeId
                 )
             }
         }
 
-        if (snapshots.isNotEmpty()) {
-            costSnapshotRepository.saveAll(snapshots)
-            logger.info(
-                "Cost snapshots: wrote {} for invoice {} (storage={}, movement={}, service={})",
-                snapshots.size,
-                billingInvoiceId,
-                snapshots.count { it.sourceType == SnapshotSourceType.STORAGE },
-                snapshots.count { it.sourceType == SnapshotSourceType.INBOUND || it.sourceType == SnapshotSourceType.OUTBOUND },
-                snapshots.count { it.sourceType == SnapshotSourceType.SERVICE }
-            )
-        }
-        // Phase C: lock adjustments that were rolled into snapshots so further
-        // edits/deletes of those adjustments throw 409 until the invoice is
-        // cancelled.
-        if (adjustmentsToLock.isNotEmpty()) {
-            movementCostAdjustmentService.lockToBillingInvoice(adjustmentsToLock.distinct(), billingInvoiceId)
-        }
+        return PreparedCostSnapshots(snapshots, adjustmentsToLock.distinct())
     }
+
+    private data class PreparedCostSnapshots(
+        val snapshots: List<BillingRunCostSnapshot>,
+        val adjustmentIds: List<String>
+    )
 
     private fun newSnapshotId(): String =
         "costsnap_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+
+    private fun stableHash(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
 
     /**
      * Phase A cascade: project rate → customer default → tenant default.

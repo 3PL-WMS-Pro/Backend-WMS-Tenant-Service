@@ -70,7 +70,9 @@ class BillingRunCancelTest {
             tenantBillingDefaultsService = Mockito.mock(TenantBillingDefaultsService::class.java),
             tenantOperationalCostsService = Mockito.mock(TenantOperationalCostsService::class.java),
             costSnapshotRepository = costSnapshotRepository,
-            movementCostAdjustmentService = movementCostAdjustmentService
+            movementCostAdjustmentService = movementCostAdjustmentService,
+            warehouseJobGenerationService = Mockito.mock(com.wmspro.tenant.billing.warehousejob.orchestration.WarehouseJobGenerationService::class.java),
+            customerNameResolver = Mockito.mock(CustomerNameResolver::class.java)
         )
     }
 

@@ -1,10 +1,12 @@
 package com.wmspro.tenant.billing.servicelog
 
+import com.wmspro.common.billing.BillingSourceClaim
 import org.springframework.data.annotation.CreatedDate
 import org.springframework.data.annotation.Id
 import org.springframework.data.mongodb.core.index.CompoundIndex
 import org.springframework.data.mongodb.core.index.Indexed
 import org.springframework.data.mongodb.core.mapping.Document
+import org.springframework.data.mongodb.core.mapping.Field
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDate
@@ -29,6 +31,10 @@ import java.time.LocalDate
 @CompoundIndex(name = "customer_performedAt_idx", def = "{'customerId': 1, 'performedAt': 1}")
 @CompoundIndex(name = "billing_invoice_idx", def = "{'billingInvoiceId': 1}")
 @CompoundIndex(name = "attached_to_idx", def = "{'attachedTo.id': 1}")
+@CompoundIndex(
+    name = "wj_v1_claim_sweep_idx",
+    def = "{'billingClaim.generationContractVersion':1,'billingClaim.state':1,'billingClaim.expiresAt':1}"
+)
 data class ServiceLog(
     @Id
     val serviceLogId: String,
@@ -112,7 +118,11 @@ data class ServiceLog(
     val carriedOverFromMonth: String? = null,
 
     val updatedAt: Instant? = null,
-    val updatedBy: String? = null
+    val updatedBy: String? = null,
+
+    /** V1-only owner-aware reservation. Null is not written on legacy saves. */
+    @Field(write = Field.Write.NON_NULL)
+    val billingClaim: BillingSourceClaim? = null
 )
 
 /**

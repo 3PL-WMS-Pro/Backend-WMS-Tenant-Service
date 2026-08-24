@@ -94,7 +94,7 @@ class TenantAwareMongoDatabaseFactory(
      * Returns whether this factory is associated with a session
      */
     override fun isTransactionActive(): Boolean {
-        return false
+        return org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()
     }
 
     /**

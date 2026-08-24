@@ -188,6 +188,14 @@ data class UserRoleMapping(
                 "canManageWarehouses" -> effectivePerms = effectivePerms.copy(canManageWarehouses = value)
                 "canConfigureSettings" -> effectivePerms = effectivePerms.copy(canConfigureSettings = value)
                 "canViewBilling" -> effectivePerms = effectivePerms.copy(canViewBilling = value)
+                "canViewWarehouseJobs" -> effectivePerms = effectivePerms.copy(canViewWarehouseJobs = value)
+                "canGenerateWarehouseJobs" -> effectivePerms = effectivePerms.copy(canGenerateWarehouseJobs = value)
+                "canSyncWarehouseJobs" -> effectivePerms = effectivePerms.copy(canSyncWarehouseJobs = value)
+                "canCancelWarehouseJobs" -> effectivePerms = effectivePerms.copy(canCancelWarehouseJobs = value)
+                "canEditBillingInvoices" -> effectivePerms = effectivePerms.copy(canEditBillingInvoices = value)
+                "canSendBillingInvoices" -> effectivePerms = effectivePerms.copy(canSendBillingInvoices = value)
+                "canViewBillingCosts" -> effectivePerms = effectivePerms.copy(canViewBillingCosts = value)
+                "canRunBillingReconciliation" -> effectivePerms = effectivePerms.copy(canRunBillingReconciliation = value)
                 "canAccessApi" -> effectivePerms = effectivePerms.copy(canAccessApi = value)
                 "canUseMobileApp" -> effectivePerms = effectivePerms.copy(canUseMobileApp = value)
                 "canExportData" -> effectivePerms = effectivePerms.copy(canExportData = value)
@@ -218,6 +226,14 @@ data class UserRoleMapping(
             "canManageWarehouses" -> effective.canManageWarehouses
             "canConfigureSettings" -> effective.canConfigureSettings
             "canViewBilling" -> effective.canViewBilling
+            "canViewWarehouseJobs" -> effective.canViewWarehouseJobs
+            "canGenerateWarehouseJobs" -> effective.canGenerateWarehouseJobs
+            "canSyncWarehouseJobs" -> effective.canSyncWarehouseJobs
+            "canCancelWarehouseJobs" -> effective.canCancelWarehouseJobs
+            "canEditBillingInvoices" -> effective.canEditBillingInvoices
+            "canSendBillingInvoices" -> effective.canSendBillingInvoices
+            "canViewBillingCosts" -> effective.canViewBillingCosts
+            "canRunBillingReconciliation" -> effective.canRunBillingReconciliation
             "canAccessApi" -> effective.canAccessApi
             "canUseMobileApp" -> effective.canUseMobileApp
             "canExportData" -> effective.canExportData

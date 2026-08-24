@@ -60,6 +60,9 @@ class TenantOperationalCostsController(
         baseStorageCostPerCbmDay = baseStorageCostPerCbmDay,
         baseInboundCostPerCbm = baseInboundCostPerCbm,
         baseOutboundCostPerCbm = baseOutboundCostPerCbm,
+        storageCostTreatment = storageCostTreatment,
+        inboundCostTreatment = inboundCostTreatment,
+        outboundCostTreatment = outboundCostTreatment,
         updatedAt = updatedAt,
         updatedBy = updatedBy,
         isConfigured = isConfigured
@@ -69,6 +72,9 @@ class TenantOperationalCostsController(
         baseStorageCostPerCbmDay = BigDecimal.ZERO,
         baseInboundCostPerCbm = BigDecimal.ZERO,
         baseOutboundCostPerCbm = BigDecimal.ZERO,
+        storageCostTreatment = "INTERNAL_STANDARD",
+        inboundCostTreatment = "INTERNAL_STANDARD",
+        outboundCostTreatment = "INTERNAL_STANDARD",
         updatedAt = Instant.EPOCH,
         updatedBy = "",
         isConfigured = false

@@ -28,6 +28,8 @@ interface WmsBillingInvoiceRepository : MongoRepository<WmsBillingInvoice, Strin
 
     fun findByFreighaiInvoiceId(freighaiInvoiceId: String): WmsBillingInvoice?
 
+    fun findByWarehouseJobId(warehouseJobId: String): WmsBillingInvoice?
+
     fun findByCustomerId(customerId: Long): List<WmsBillingInvoice>
 
     fun findByBillingMonth(billingMonth: String): List<WmsBillingInvoice>
@@ -50,6 +52,9 @@ interface WmsBillingInvoiceRepository : MongoRepository<WmsBillingInvoice, Strin
      */
     @Query("{ 'status': 'SUBMITTED', 'freighaiStatus': { \$nin: ['PAID', 'CANCELLED'] } }")
     fun findActiveSubmittedInvoices(): List<WmsBillingInvoice>
+
+    @Query("{ 'generationContractVersion': 'WAREHOUSE_JOB_V1', 'warehouseJobSyncState': { \$in: ['PENDING','FAILED','MANUAL_REVIEW'] } }")
+    fun findV1WarehouseJobSyncCandidates(): List<WmsBillingInvoice>
 
     /**
      * Used by ServiceLogs in Phase 5 to detect "is this month already

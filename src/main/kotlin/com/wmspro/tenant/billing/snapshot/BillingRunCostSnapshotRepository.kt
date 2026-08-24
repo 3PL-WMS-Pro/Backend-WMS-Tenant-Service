@@ -18,4 +18,9 @@ interface BillingRunCostSnapshotRepository : MongoRepository<BillingRunCostSnaps
 
     /** Cancellation cleanup — remove all snapshots tied to a cancelled invoice. */
     fun deleteByBillingInvoiceId(billingInvoiceId: String): Long
+
+    fun existsByBillingInvoiceIdAndGenerationContractVersion(
+        billingInvoiceId: String,
+        generationContractVersion: String
+    ): Boolean
 }

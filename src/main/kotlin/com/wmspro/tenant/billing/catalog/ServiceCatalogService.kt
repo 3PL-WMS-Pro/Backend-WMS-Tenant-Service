@@ -47,6 +47,7 @@ class ServiceCatalogService(
             unit = request.unit,
             standardRatePerUnit = request.standardRatePerUnit,
             standardCostPerUnit = request.standardCostPerUnit,
+            costTreatment = validateTreatment(request.costTreatment),
             freighaiChargeTypeId = request.freighaiChargeTypeId,
             vatPercent = request.vatPercent,
             isActive = request.isActive,
@@ -76,6 +77,7 @@ class ServiceCatalogService(
             unit = request.unit,
             standardRatePerUnit = request.standardRatePerUnit,
             standardCostPerUnit = request.standardCostPerUnit,
+            costTreatment = validateTreatment(request.costTreatment),
             freighaiChargeTypeId = request.freighaiChargeTypeId,
             vatPercent = request.vatPercent,
             isActive = request.isActive,
@@ -121,5 +123,13 @@ class ServiceCatalogService(
                 "FreighAi ChargeType '$chargeTypeId' (${resolved.label}) is inactive in FreighAi. Reactivate it there or pick a different one."
             )
         }
+    }
+
+    private fun validateTreatment(value: String): String {
+        val normalized = value.trim().uppercase()
+        require(normalized in setOf("PARTNER_INVOICE", "INTERNAL_STANDARD")) {
+            "costTreatment must be PARTNER_INVOICE or INTERNAL_STANDARD"
+        }
+        return normalized
     }
 }

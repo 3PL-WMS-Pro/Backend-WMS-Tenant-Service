@@ -5,6 +5,7 @@ import org.springframework.data.annotation.Id
 import org.springframework.data.mongodb.core.index.CompoundIndex
 import org.springframework.data.mongodb.core.index.Indexed
 import org.springframework.data.mongodb.core.mapping.Document
+import org.springframework.data.mongodb.core.mapping.Field
 import java.math.BigDecimal
 import java.time.Instant
 
@@ -28,6 +29,12 @@ import java.time.Instant
 @CompoundIndex(name = "invoice_idx", def = "{'billingInvoiceId': 1}")
 @CompoundIndex(name = "customer_month_idx", def = "{'customerId': 1, 'billingMonth': 1}")
 @CompoundIndex(name = "source_idx", def = "{'sourceRecord.id': 1}")
+@CompoundIndex(
+    name = "wj_v1_cost_line_uq",
+    def = "{'billingInvoiceId':1,'costLineId':1}",
+    unique = true,
+    partialFilter = "{'generationContractVersion':'WAREHOUSE_JOB_V1'}"
+)
 data class BillingRunCostSnapshot(
     @Id
     val snapshotId: String,
@@ -80,7 +87,36 @@ data class BillingRunCostSnapshot(
     /** revenueAmount − totalCost. Null when totalCost is null. */
     val margin: BigDecimal?,
 
-    val snapshotAt: Instant = Instant.now()
+    val snapshotAt: Instant = Instant.now(),
+
+    /** Additive V1 provenance; absent on every pre-cutover snapshot. */
+    @Field(write = Field.Write.NON_NULL)
+    val generationContractVersion: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val costLineId: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val sourceLineId: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val costTreatment: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val freighaiChargeTypeId: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val completionWeight: BigDecimal? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val calculationVersion: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val carryOverOriginMonth: String? = null,
+    @Field(write = Field.Write.NON_NULL)
+    val storageProvenance: StorageCostProvenance? = null
+)
+
+data class StorageCostProvenance(
+    val inventoryType: String,
+    val inventoryId: String,
+    val warehouseId: String? = null,
+    val locationId: String? = null,
+    val fromDate: String? = null,
+    val toDate: String? = null
 )
 
 /**
