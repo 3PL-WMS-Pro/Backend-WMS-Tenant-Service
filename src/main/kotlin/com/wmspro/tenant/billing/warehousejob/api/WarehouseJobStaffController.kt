@@ -37,6 +37,15 @@ class WarehouseJobStaffAuthorization(private val users: UserRoleMappingRepositor
     fun require(request: HttpServletRequest, permission: String) {
         val email = request.getHeader("X-User-Email")?.trim()?.lowercase()
             ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authenticated user identity is required")
+
+        // WMS administrators are authenticated by the gateway and have historically been
+        // authorised through X-User-Type. Older tenants may not have a UserRoleMapping row for
+        // every administrator, and their existing rows predate the Warehouse Job permission
+        // fields. Preserve that established admin contract so deploying this feature does not
+        // require a permission backfill or an activation step. Non-admin users still require an
+        // explicit effective permission below.
+        if (request.getHeader("X-User-Type")?.trim()?.equals("ADMIN", ignoreCase = true) == true) return
+
         val allowed = users.findByEmail(email).any { it.isActive && it.hasPermission(permission) }
         if (!allowed) throw ResponseStatusException(HttpStatus.FORBIDDEN, "Warehouse Job permission '$permission' is required")
     }
