@@ -1,6 +1,7 @@
 package com.wmspro.tenant.billing.warehousejob
 
 import com.wmspro.tenant.billing.invoice.BillingInvoiceStatus
+import com.wmspro.tenant.billing.invoice.WarehouseJobSyncState
 import com.wmspro.tenant.billing.invoice.WmsBillingInvoice
 import com.wmspro.tenant.billing.invoice.WmsBillingInvoiceRepository
 import com.wmspro.tenant.billing.invoice.cascade.WmsInternalCascadeClient
@@ -17,6 +18,38 @@ import java.time.Instant
 import java.util.Optional
 
 class WarehouseJobRecoveryServiceTest {
+    @Test
+    fun `staff retry does not downgrade an already synchronized invoice when no command is retryable`() {
+        val invoices = Mockito.mock(WmsBillingInvoiceRepository::class.java)
+        val snapshots = Mockito.mock(BillingRunCostSnapshotRepository::class.java)
+        val intentRepo = Mockito.mock(WarehouseJobClaimIntentRepository::class.java)
+        val intentService = Mockito.mock(WarehouseJobClaimIntentService::class.java)
+        val cascade = Mockito.mock(WmsInternalCascadeClient::class.java)
+        val payload = Mockito.mock(WarehouseJobPayloadBuilder::class.java)
+        val admin = Mockito.mock(WarehouseJobOutboxAdminService::class.java)
+        val mongo = Mockito.mock(MongoTemplate::class.java)
+        val invoice = invoice().copy(warehouseJobSyncState = WarehouseJobSyncState.SYNCED)
+        val intent = WarehouseJobClaimIntent(
+            billingInvoiceId = invoice.billingInvoiceId, payloadVersion = 1, customerId = 1,
+            projectBucket = "DEFAULT", billingMonth = "2026-09", sourceFingerprint = "hash",
+            state = WarehouseJobClaimIntentState.READY, expiresAt = Instant.now()
+        )
+        Mockito.`when`(invoices.findById(invoice.billingInvoiceId)).thenReturn(Optional.of(invoice))
+        Mockito.`when`(intentRepo.findById(invoice.billingInvoiceId)).thenReturn(Optional.of(intent))
+        Mockito.`when`(admin.retry(invoice.billingInvoiceId)).thenReturn(0)
+
+        val service = WarehouseJobRecoveryService(
+            invoices, snapshots, intentRepo, intentService, cascade, payload, admin, mongo
+        )
+
+        val result = service.retry(invoice.billingInvoiceId, "jwt")
+
+        assertEquals(WarehouseJobSyncState.SYNCED, result.warehouseJobSyncState)
+        Mockito.verify(mongo, Mockito.never()).updateFirst(
+            Mockito.any(), Mockito.any(), Mockito.eq(WmsBillingInvoice::class.java)
+        )
+    }
+
     @Test
     fun `staff retry confirms partially committed claims before unquarantining outbox`() {
         val invoices = Mockito.mock(WmsBillingInvoiceRepository::class.java)

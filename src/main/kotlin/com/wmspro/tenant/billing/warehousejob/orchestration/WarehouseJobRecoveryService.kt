@@ -56,15 +56,17 @@ class WarehouseJobRecoveryService(
         } else if (intent.state != WarehouseJobClaimIntentState.READY) {
             throw WarehouseJobCutoverConflict("CUTOVER_CONFLICT: claim intent is ${intent.state}")
         }
-        outboxAdminService.retry(invoice.billingInvoiceId)
-        mongoTemplate.updateFirst(
-            Query.query(Criteria.where("billingInvoiceId").`is`(invoice.billingInvoiceId)
-                .and("generationContractVersion").`is`(WarehouseJobGenerationContracts.V1)
-                .and("warehouseJobPayloadVersion").`is`(version)),
-            Update().set("warehouseJobSyncState", WarehouseJobSyncState.PENDING)
-                .unset("warehouseJobLastError").set("warehouseJobLastSyncedAt", Instant.now()),
-            WmsBillingInvoice::class.java
-        )
+        val retriedCommands = outboxAdminService.retry(invoice.billingInvoiceId)
+        if (retriedCommands > 0) {
+            mongoTemplate.updateFirst(
+                Query.query(Criteria.where("billingInvoiceId").`is`(invoice.billingInvoiceId)
+                    .and("generationContractVersion").`is`(WarehouseJobGenerationContracts.V1)
+                    .and("warehouseJobPayloadVersion").`is`(version)),
+                Update().set("warehouseJobSyncState", WarehouseJobSyncState.PENDING)
+                    .unset("warehouseJobLastError").set("warehouseJobLastSyncedAt", Instant.now()),
+                WmsBillingInvoice::class.java
+            )
+        }
         return invoiceRepository.findById(invoice.billingInvoiceId).orElseThrow()
     }
 
