@@ -536,11 +536,7 @@ class UserRoleMappingService(
         if (permissions.canTransfer) count++
         if (permissions.canAdjustInventory) count++
         // Management permissions
-        if (permissions.canViewReports) count++
-        if (permissions.canManageUsers) count++
-        if (permissions.canManageWarehouses) count++
-        if (permissions.canConfigureSettings) count++
-        if (permissions.canViewBilling) count++
+        count += countManagementPermissions(permissions)
         // System permissions
         if (permissions.canAccessApi) count++
         if (permissions.canUseMobileApp) count++
@@ -570,6 +566,15 @@ class UserRoleMappingService(
         if (permissions.canManageWarehouses) count++
         if (permissions.canConfigureSettings) count++
         if (permissions.canViewBilling) count++
+        if (permissions.canViewWarehouseJobs) count++
+        if (permissions.canManageSupplierExpenses) count++
+        if (permissions.canGenerateWarehouseJobs) count++
+        if (permissions.canSyncWarehouseJobs) count++
+        if (permissions.canCancelWarehouseJobs) count++
+        if (permissions.canEditBillingInvoices) count++
+        if (permissions.canSendBillingInvoices) count++
+        if (permissions.canViewBillingCosts) count++
+        if (permissions.canRunBillingReconciliation) count++
         return count
     }
 
