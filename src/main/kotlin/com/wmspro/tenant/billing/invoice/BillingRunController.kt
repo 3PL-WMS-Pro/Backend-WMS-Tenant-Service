@@ -54,6 +54,20 @@ class BillingRunController(
         return ResponseEntity.ok(ApiResponse.success(enriched, "Summaries retrieved"))
     }
 
+    /** Unpaginated preflight: old months must not escape confirmation because history UI shows only 20 rows. */
+    @GetMapping("/history-check")
+    fun historyCheck(@RequestParam billingMonth: String, @RequestParam(required = false) customerId: Long?): ResponseEntity<ApiResponse<Map<String, Any>>> {
+        java.time.YearMonth.parse(billingMonth)
+        return ResponseEntity.ok(ApiResponse.success(mapOf("previouslyRun" to previouslyRun(billingMonth, customerId?.let { listOf(it) }))))
+    }
+
+    private fun previouslyRun(month: String, customerIds: List<Long>?): Boolean {
+        val summaries = summaryRepository.findByBillingMonthOrderByTriggeredAtDesc(month)
+        val historyExists = summaries.any { summary -> customerIds == null ||
+            (summary.succeededCustomerIds + summary.skippedCustomerIds + summary.failedCustomerIds).any { it in customerIds } }
+        return historyExists || invoiceRepository.findByBillingMonth(month).any { customerIds == null || it.customerId in customerIds }
+    }
+
     @PostMapping("/preview")
     fun preview(
         @Valid @RequestBody request: BillingPreviewRequest,
@@ -84,6 +98,9 @@ class BillingRunController(
         val authToken = httpRequest.getHeader(HttpHeaders.AUTHORIZATION).orEmpty()
         val userEmail = httpRequest.getHeader("X-User-Email") ?: "unknown"
         return try {
+            if (!request.confirmRerun && previouslyRun(request.billingMonth, listOf(request.customerId))) {
+                return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error("BILLING_RUN_CONFIRMATION_REQUIRED: This customer already has a billing run for ${request.billingMonth}. Confirm Run Anyway to continue."))
+            }
             val saved = service.generate(request.customerId, request.billingMonth, userEmail, authToken)
             ResponseEntity.status(HttpStatus.CREATED).body(
                 ApiResponse.success(
@@ -117,6 +134,9 @@ class BillingRunController(
         val authToken = httpRequest.getHeader(HttpHeaders.AUTHORIZATION).orEmpty()
         val userEmail = httpRequest.getHeader("X-User-Email") ?: "CRON"
 
+        if (!request.confirmRerun && previouslyRun(request.billingMonth, request.customerIds)) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error("BILLING_RUN_CONFIRMATION_REQUIRED: Billing has already been run for ${request.billingMonth}. Confirm Run Anyway to continue."))
+        }
         val customerIds = request.customerIds
             ?: billingProfileRepository.findByBillingEnabled(true).map { it.customerId }
 
@@ -278,7 +298,7 @@ internal fun WmsBillingInvoice.toResponse(customerNamesById: Map<Long, String> =
     cancelledAt = cancelledAt,
     cancelledBy = cancelledBy,
     cancelReason = cancelReason,
-    displayStatus = deriveDisplayStatus(status, freighaiStatus),
+    displayStatus = if (generationContractVersion == "WAREHOUSE_JOB_V1" && storageLines.isEmpty() && movementLines.isEmpty() && serviceLines.isEmpty()) "COST_ONLY" else deriveDisplayStatus(status, freighaiStatus),
     manuallyEdited = manuallyEdited,
     editedLineItems = editedLineItems,
     editHistory = editHistory

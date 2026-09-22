@@ -142,7 +142,7 @@ class WarehouseJobGenerationService(
 
     private fun targets(snapshots: List<BillingRunCostSnapshot>): List<Pair<SnapshotSourceType, BillingClaimTarget>> =
         snapshots.asSequence()
-            .filter { it.sourceType != SnapshotSourceType.STORAGE }
+            .filter { it.sourceType !in setOf(SnapshotSourceType.STORAGE, SnapshotSourceType.SUPPLIER_EXPENSE) }
             .map { snapshot ->
                 val sourceLineId = snapshot.sourceLineId ?: payloadBuilder.stableCostLineId(
                     snapshot.sourceType.name,

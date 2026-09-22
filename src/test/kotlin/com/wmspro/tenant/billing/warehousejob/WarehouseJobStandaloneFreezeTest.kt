@@ -37,7 +37,7 @@ class WarehouseJobStandaloneFreezeTest {
     private val mapper = ObjectMapper().registerKotlinModule().registerModule(JavaTimeModule())
     private val service = WarehouseJobFreezeService(
         invoices, snapshots, outbox, WarehouseJobPayloadBuilder(mapper),
-        adjustments, intents, mapper
+        adjustments, intents, mapper, Mockito.mock(com.wmspro.tenant.billing.adjustment.SupplierExpenseService::class.java)
     )
 
     @BeforeEach
@@ -104,6 +104,20 @@ class WarehouseJobStandaloneFreezeTest {
             failure.compensationFailures.any { it.startsWith("invoice:wmsinv-1:") }
         )
         Mockito.verify(intents, Mockito.never()).markFrozen("wmsinv-1")
+    }
+
+    @Test
+    fun `cost-only supplier run never enqueues a Sales Invoice`() {
+        Mockito.`when`(invoices.insert(any(WmsBillingInvoice::class.java))).thenAnswer { it.arguments[0] }
+        Mockito.`when`(snapshots.insert(any(BillingRunCostSnapshot::class.java))).thenAnswer { it.arguments[0] }
+        Mockito.`when`(outbox.insert(any(com.wmspro.tenant.billing.warehousejob.orchestration.WarehouseJobOutbox::class.java))).thenAnswer { it.arguments[0] }
+        val cost = snapshot().copy(sourceType = SnapshotSourceType.SUPPLIER_EXPENSE,
+            sourceRecord = SnapshotRef(SnapshotSourceType.SUPPLIER_EXPENSE, "expense-1", "Forklift"),
+            sourceLineId = "0", costTreatment = "PARTNER_INVOICE")
+        val result = service.freezeNewTuple("199", invoice().copy(storageLines = emptyList(),
+            subtotal = BigDecimal.ZERO, grandTotal = BigDecimal.ZERO), listOf(cost), emptyList(),
+            "Customer", "CUS-1", "CUR-AED", "corr")
+        org.junit.jupiter.api.Assertions.assertEquals(listOf(com.wmspro.tenant.billing.warehousejob.orchestration.WarehouseJobOutboxOperation.UPSERT_WJ), result.outbox.map { it.operation })
     }
 
     private fun invoice() = WmsBillingInvoice(

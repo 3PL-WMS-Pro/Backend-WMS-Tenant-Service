@@ -144,7 +144,8 @@ enum class SnapshotSourceType {
     STORAGE,                  // per storage_item or quantity_inventory CBM-day contribution
     INBOUND,                  // per receiving_record (GRN)
     OUTBOUND,                 // per order_fulfillment_request (GIN)
-    SERVICE                   // per service_log
+    SERVICE,                  // per service_log
+    SUPPLIER_EXPENSE           // independent cost, never a selling line
 }
 
 /**

@@ -14,7 +14,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 @Component
 class WarehouseJobOutboxScheduler(
     private val tenants: TenantDatabaseMappingRepository,
-    private val worker: WarehouseJobOutboxWorker
+    private val worker: WarehouseJobOutboxWorker,
+    private val supplierExpenses: com.wmspro.tenant.billing.adjustment.SupplierExpenseSyncService
 ) {
     @Value("\${app.external-api.freighai.service-account-jwt:}")
     private lateinit var serviceJwt: String
@@ -35,6 +36,7 @@ class WarehouseJobOutboxScheduler(
                     TenantContext.setCurrentTenant(tenant.clientId.toString())
                     MongoConnectionStorage.setConnection(tenant.mongoConnection.url)
                     worker.drainCurrentTenant(workerId, serviceJwt)
+                    supplierExpenses.retryPending(serviceJwt)
                 } catch (e: Exception) {
                     logger.error("Warehouse Job outbox drain failed for tenant={}", tenant.clientId, e)
                 } finally {

@@ -76,13 +76,13 @@ class WarehouseJobRecoveryService(
 
     private fun sourceClaims(invoice: WmsBillingInvoice): List<ClaimedBillingSource> =
         snapshotRepository.findByBillingInvoiceId(invoice.billingInvoiceId).asSequence()
-            .filter { it.generationContractVersion == WarehouseJobGenerationContracts.V1 && it.sourceType != SnapshotSourceType.STORAGE }
+            .filter { it.generationContractVersion == WarehouseJobGenerationContracts.V1 && it.sourceType !in setOf(SnapshotSourceType.STORAGE, SnapshotSourceType.SUPPLIER_EXPENSE) }
             .map {
                 val kind = when (it.sourceType) {
                     SnapshotSourceType.INBOUND -> BillingSourceKind.GRN
                     SnapshotSourceType.OUTBOUND -> BillingSourceKind.GIN
                     SnapshotSourceType.SERVICE -> BillingSourceKind.SERVICE_LOG
-                    SnapshotSourceType.STORAGE -> error("filtered")
+                    SnapshotSourceType.STORAGE, SnapshotSourceType.SUPPLIER_EXPENSE -> error("filtered")
                 }
                 val sourceLine = it.sourceLineId ?: payloadBuilder.stableCostLineId(it.sourceType.name, it.sourceRecord.id)
                 ClaimedBillingSource(kind, BillingClaimTarget(it.sourceRecord.id, sourceLine))

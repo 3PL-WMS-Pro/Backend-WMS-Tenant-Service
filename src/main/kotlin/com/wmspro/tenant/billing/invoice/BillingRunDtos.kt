@@ -26,7 +26,8 @@ data class GenerateBillingRunRequest(
     @field:NotNull val customerId: Long,
     @field:NotBlank
     @field:Pattern(regexp = "^\\d{4}-\\d{2}$", message = "billingMonth must be YYYY-MM")
-    val billingMonth: String
+    val billingMonth: String,
+    val confirmRerun: Boolean = false
 )
 
 /**
@@ -39,7 +40,8 @@ data class GenerateAllBillingRunsRequest(
     @field:Pattern(regexp = "^\\d{4}-\\d{2}$", message = "billingMonth must be YYYY-MM")
     val billingMonth: String,
     /** Optional subset; null = all `billingEnabled` customers. */
-    val customerIds: List<Long>? = null
+    val customerIds: List<Long>? = null,
+    val confirmRerun: Boolean = false
 )
 
 data class CancelBillingInvoiceRequest(
@@ -69,7 +71,8 @@ data class BillingPreviewResponse(
     val canGenerate: Boolean,
     /** True if a SUBMITTED invoice already exists; generate would no-op. */
     val alreadyGenerated: Boolean,
-    val existingInvoiceId: String? = null
+    val existingInvoiceId: String? = null,
+    val supplierExpenses: List<com.wmspro.tenant.billing.adjustment.SupplierExpense> = emptyList()
 )
 
 data class DataQualityWarning(

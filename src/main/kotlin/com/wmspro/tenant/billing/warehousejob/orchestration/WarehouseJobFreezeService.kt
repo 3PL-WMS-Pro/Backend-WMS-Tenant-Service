@@ -38,7 +38,8 @@ class WarehouseJobFreezeService(
     private val payloadBuilder: WarehouseJobPayloadBuilder,
     private val movementCostAdjustmentService: MovementCostAdjustmentService,
     private val claimIntentService: WarehouseJobClaimIntentService,
-    private val objectMapper: ObjectMapper
+    private val objectMapper: ObjectMapper,
+    private val supplierExpenses: com.wmspro.tenant.billing.adjustment.SupplierExpenseService
 ) {
     /**
      * Standalone-safe local freeze for a previously nonexistent tuple.
@@ -164,6 +165,9 @@ class WarehouseJobFreezeService(
         var adjustmentsLocked = false
         try {
             val savedInvoice = invoiceRepository.insert(markedInvoice).also { invoiceInserted = true }
+            markedSnapshots.filter { it.sourceType == com.wmspro.tenant.billing.snapshot.SnapshotSourceType.SUPPLIER_EXPENSE }.forEach {
+                supplierExpenses.freeze(it, candidateInvoice.billingInvoiceId)
+            }
             val savedSnapshots = markedSnapshots.map { snapshot ->
                 snapshotRepository.insert(snapshot).also { insertedSnapshotIds += it.snapshotId }
             }
@@ -171,7 +175,7 @@ class WarehouseJobFreezeService(
                 movementCostAdjustmentService.lockToBillingInvoice(movementAdjustmentIds.distinct(), candidateInvoice.billingInvoiceId)
                 adjustmentsLocked = true
             }
-            val commands = listOf(wjCommand, siCommand).map { command ->
+            val commands = (if (built.request.commercialSnapshot.sellingLines.isEmpty()) listOf(wjCommand) else listOf(wjCommand, siCommand)).map { command ->
                 outboxRepository.insert(command).also { insertedOutboxIds += it.outboxId }
             }
             claimIntentService.markFrozen(candidateInvoice.billingInvoiceId)
@@ -216,6 +220,7 @@ class WarehouseJobFreezeService(
         adjustmentsLocked: Boolean
     ): List<String> {
         val failures = mutableListOf<String>()
+        runCatching { if (invoiceInserted) supplierExpenses.release(billingInvoiceId) }.onFailure { failures += "supplier-expenses:${it.message}" }
         outboxIds.asReversed().forEach { id ->
             runCatching { outboxRepository.deleteById(id) }
                 .onFailure { failures += "outbox:$id:${it.message}" }

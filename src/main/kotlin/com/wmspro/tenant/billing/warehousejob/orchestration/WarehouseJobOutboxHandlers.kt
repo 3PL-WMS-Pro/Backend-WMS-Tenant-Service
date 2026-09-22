@@ -39,7 +39,7 @@ class WarehouseJobBindingService(
             .set("warehouseJobId", job.jobId)
             .set("warehouseJobNumber", job.jobNo)
             .set("warehouseJobStatus", job.lifecycle)
-            .set("warehouseJobSyncState", WarehouseJobSyncState.PENDING)
+            .set("warehouseJobSyncState", if (load(command)?.let { it.storageLines.isEmpty() && it.movementLines.isEmpty() && it.serviceLines.isEmpty() } == true) WarehouseJobSyncState.SYNCED else WarehouseJobSyncState.PENDING)
             .set("warehouseJobLastSyncedAt", Instant.now())
             .unset("warehouseJobLastError"))
 
@@ -57,6 +57,10 @@ class WarehouseJobBindingService(
             .set("warehouseJobSyncState", WarehouseJobSyncState.SYNCED)
             .set("warehouseJobLastSyncedAt", Instant.now())
             .unset("warehouseJobLastError"))
+
+    fun completeCostOnly(command: WarehouseJobOutbox) {
+        update(command, null, Update().set("status", BillingInvoiceStatus.SUBMITTED).set("warehouseJobSyncState", WarehouseJobSyncState.SYNCED))
+    }
 
     fun failure(command: WarehouseJobOutbox, error: String, manual: Boolean) {
         update(command, null, Update()
@@ -149,6 +153,7 @@ class WarehouseJobUpsertOutboxHandler(
 
     private fun adopt(command: WarehouseJobOutbox, request: CreateFreighAiWarehouseJobRequest, job: FreighAiWarehouseJobResponse): OutboxCommandResult {
         if (job.sourceContentHash != request.sourceContentHash) return manual(command, "Remote Warehouse Job hash does not match frozen payload")
+        if (request.commercialSnapshot.sellingLines.isEmpty()) binding.completeCostOnly(command)
         return if (binding.bindWarehouseJob(command, job)) OutboxCommandResult.Success(
             remoteEntityId = job.jobId,
             remoteResponseHash = remoteHash(

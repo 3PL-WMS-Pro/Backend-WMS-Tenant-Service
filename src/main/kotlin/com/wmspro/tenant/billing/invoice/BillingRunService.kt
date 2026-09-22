@@ -93,7 +93,9 @@ class BillingRunService(
     private val costSnapshotRepository: BillingRunCostSnapshotRepository,
     private val movementCostAdjustmentService: MovementCostAdjustmentService,
     private val warehouseJobGenerationService: WarehouseJobGenerationService,
-    private val customerNameResolver: CustomerNameResolver
+    private val customerNameResolver: CustomerNameResolver,
+    private val supplierExpenses: com.wmspro.tenant.billing.adjustment.SupplierExpenseService,
+    private val supplierExpenseSync: com.wmspro.tenant.billing.adjustment.SupplierExpenseSyncService
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -132,7 +134,8 @@ class BillingRunService(
             dataQualityWarnings = context.warnings,
             canGenerate = !alreadyGenerated && context.warnings.none { it.severity == WarningSeverity.BLOCKER },
             alreadyGenerated = alreadyGenerated,
-            existingInvoiceId = firstActive?.billingInvoiceId
+            existingInvoiceId = firstActive?.billingInvoiceId,
+            supplierExpenses = context.supplierExpenses
         )
     }
 
@@ -166,7 +169,10 @@ class BillingRunService(
             throw IllegalStateException("Billing run blocked by data quality issues: $msgs")
         }
 
-        if (context.storageLines.isEmpty() && context.movementLines.isEmpty() && context.serviceLines.isEmpty()) {
+        if (context.storageLines.isEmpty() && context.movementLines.isEmpty() && context.serviceLines.isEmpty() && context.supplierExpenses.isEmpty()) {
+            val existing = invoiceRepository.findAllByCustomerIdAndBillingMonth(customerId, billingMonth)
+                .filter { it.generationContractVersion == "WAREHOUSE_JOB_V1" }
+            if (existing.isNotEmpty()) return existing
             throw IllegalStateException(
                 "No billable activity for customer $customerId in $billingMonth — nothing to invoice."
             )
@@ -178,7 +184,7 @@ class BillingRunService(
         val projectCodes: Set<String?> =
             context.storageLines.map { it.projectCode }.toSet() +
             context.movementLines.map { it.projectCode }.toSet() +
-            context.serviceLines.map { it.projectCode }.toSet()
+            context.serviceLines.map { it.projectCode }.toSet() + context.supplierExpenses.map { it.projectCode }.toSet()
 
         // Sort for deterministic output: null (default) first, then projects
         // A→Z. Project codes match `^[A-Z][A-Z0-9_]*$` so empty-string sorts
@@ -195,7 +201,10 @@ class BillingRunService(
                 authToken = authToken,
                 fullContext = context
             )
-            if (invoice != null) results += invoice
+            if (invoice != null) {
+                results += invoice
+                supplierExpenseSync.syncMonth(invoice, authToken)
+            }
         }
 
         if (results.isEmpty()) {
@@ -225,7 +234,8 @@ class BillingRunService(
         val sliceStorage = fullContext.storageLines.filter { it.projectCode == projectCode }
         val sliceMovement = fullContext.movementLines.filter { it.projectCode == projectCode }
         val sliceService = fullContext.serviceLines.filter { it.projectCode == projectCode }
-        if (sliceStorage.isEmpty() && sliceMovement.isEmpty() && sliceService.isEmpty()) return null
+        val sliceExpenses = fullContext.supplierExpenses.filter { it.projectCode == projectCode }
+        if (sliceStorage.isEmpty() && sliceMovement.isEmpty() && sliceService.isEmpty() && sliceExpenses.isEmpty()) return null
 
         val subtotal = (sliceStorage.sumOf { it.amount }
             + sliceMovement.sumOf { it.amount }
@@ -317,6 +327,7 @@ class BillingRunService(
 
         // Slice context for FreighAi line item generation + cost snapshot writes.
         val sliceContext = fullContext.copy(
+            supplierExpenses = sliceExpenses,
             storageLines = sliceStorage,
             movementLines = sliceMovement,
             serviceLines = sliceService,
@@ -969,6 +980,7 @@ class BillingRunService(
             outboundResult = outboundResult,
             serviceAggregated = aggregated,
             catalogByCode = catalogByCode,
+            supplierExpenses = supplierExpenses.forMonth(customerId, billingMonth.toString()),
             tenantCostDefaults = tenantCosts
         )
     }
@@ -1162,6 +1174,7 @@ class BillingRunService(
             }
         }
 
+        snapshots += context.supplierExpenses.map { it.snapshot(billingInvoiceId) }
         return PreparedCostSnapshots(snapshots, adjustmentsToLock.distinct())
     }
 
@@ -1268,7 +1281,8 @@ private data class BillingContext(
     val serviceAggregated: Map<com.wmspro.tenant.billing.invoice.aggregator.ServiceLineKey, AggregatedServiceLine> = emptyMap(),
     val catalogByCode: Map<String, ServiceCatalog> = emptyMap(),
     /** Phase B: tenant cost defaults snapshotted at build time. */
-    val tenantCostDefaults: TenantOperationalCosts? = null
+    val tenantCostDefaults: TenantOperationalCosts? = null,
+    val supplierExpenses: List<com.wmspro.tenant.billing.adjustment.SupplierExpense> = emptyList()
 ) {
     fun toFreighAiLineItems(): List<FreighAiInvoiceLineItem> {
         // Phase E: build a tagged buffer in the same emission order today's

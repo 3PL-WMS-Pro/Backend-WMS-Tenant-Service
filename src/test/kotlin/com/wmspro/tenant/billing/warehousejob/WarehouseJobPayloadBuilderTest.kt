@@ -38,6 +38,28 @@ class WarehouseJobPayloadBuilderTest {
         }
     }
 
+    @Test
+    fun `supplier cost has no customer selling line and is included exactly once`() {
+        val expense = com.wmspro.tenant.billing.adjustment.SupplierExpense(
+            expenseId = "expense-123", customerId = 42,
+            attachedTo = com.wmspro.tenant.billing.adjustment.AdjustmentAttachedRef(
+                com.wmspro.tenant.billing.adjustment.AdjustmentAttachedType.GRN, "rr-1", "GRN-1"),
+            projectCode = null, incurredOn = java.time.LocalDate.parse("2026-08-12"), billingMonth = "2026-08",
+            description = "Forklift", netAmount = BigDecimal("300.00"), chargeTypeId = "charge-forklift", createdBy = "operator")
+        val cost = expense.snapshot("wmsinv-1").copy(generationContractVersion = "WAREHOUSE_JOB_V1")
+        val mixed = builder.build("tenant-1", invoice("WAREHOUSE_JOB_V1"), listOf(snapshot(), cost), "Customer", "AED", 1).request.commercialSnapshot
+        assertEquals(listOf("Storage"), mixed.sellingLines.map { it.description })
+        assertEquals(0, BigDecimal("310").compareTo(mixed.plannedCostTotal))
+        assertEquals("PARTNER_INVOICE", mixed.plannedCostLines.last().treatment)
+        val costOnly = builder.build("tenant-1", invoice("WAREHOUSE_JOB_V1").copy(
+            storageLines = emptyList(), subtotal = BigDecimal.ZERO, grandTotal = BigDecimal.ZERO),
+            listOf(cost), "Customer", "AED", 1).request.commercialSnapshot
+        assertEquals(0, costOnly.sellingLines.size)
+        assertEquals(0, costOnly.sellingGrandTotal.signum())
+        assertEquals(0, BigDecimal("300").compareTo(costOnly.plannedCostTotal))
+        assertEquals(expense.costLineId, costOnly.plannedCostLines.single().costLineId)
+    }
+
     private fun invoice(marker: String?) = WmsBillingInvoice(
         billingInvoiceId = "wmsinv-1",
         customerId = 42,

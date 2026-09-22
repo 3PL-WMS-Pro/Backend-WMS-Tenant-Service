@@ -188,6 +188,7 @@ data class UserRoleMapping(
                 "canManageWarehouses" -> effectivePerms = effectivePerms.copy(canManageWarehouses = value)
                 "canConfigureSettings" -> effectivePerms = effectivePerms.copy(canConfigureSettings = value)
                 "canViewBilling" -> effectivePerms = effectivePerms.copy(canViewBilling = value)
+                "canManageSupplierExpenses" -> effectivePerms = effectivePerms.copy(canManageSupplierExpenses = value)
                 "canViewWarehouseJobs" -> effectivePerms = effectivePerms.copy(canViewWarehouseJobs = value)
                 "canGenerateWarehouseJobs" -> effectivePerms = effectivePerms.copy(canGenerateWarehouseJobs = value)
                 "canSyncWarehouseJobs" -> effectivePerms = effectivePerms.copy(canSyncWarehouseJobs = value)
@@ -226,6 +227,7 @@ data class UserRoleMapping(
             "canManageWarehouses" -> effective.canManageWarehouses
             "canConfigureSettings" -> effective.canConfigureSettings
             "canViewBilling" -> effective.canViewBilling
+            "canManageSupplierExpenses" -> effective.canManageSupplierExpenses
             "canViewWarehouseJobs" -> effective.canViewWarehouseJobs
             "canGenerateWarehouseJobs" -> effective.canGenerateWarehouseJobs
             "canSyncWarehouseJobs" -> effective.canSyncWarehouseJobs

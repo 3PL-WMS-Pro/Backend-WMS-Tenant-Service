@@ -131,7 +131,7 @@ class WarehouseJobPayloadBuilder(objectMapper: ObjectMapper) {
             )
         }
 
-        require(selling.isNotEmpty()) { "Warehouse Job requires at least one selling line" }
+        require(selling.isNotEmpty() || planned.isNotEmpty()) { "Warehouse Job requires selling lines or planned costs" }
         require(selling.map { it.lineId }.distinct().size == selling.size) { "Warehouse Job selling line IDs must be unique" }
         require(planned.map { it.costLineId }.distinct().size == planned.size) { "Warehouse Job cost line IDs must be unique" }
         require(selling.none { listOf(it.quantity, it.unitPrice, it.netAmount, it.taxAmount, it.grossAmount).any { amount -> amount.signum() < 0 } }) {
