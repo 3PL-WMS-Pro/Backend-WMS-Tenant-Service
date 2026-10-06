@@ -84,7 +84,7 @@ class OccupancyAggregator(
             if (cbm == null || cbm.signum() == 0) {
                 warnings += OccupancyWarning(
                     code = "STORAGE_ITEM_NO_DIMENSIONS",
-                    affectedId = item.getString("_id") ?: "?"
+                    affectedId = item.idString() ?: "?"
                 )
                 continue
             }
@@ -98,7 +98,7 @@ class OccupancyAggregator(
             storageBuckets.merge(projectCode, contribution, BigDecimal::add)
             contributionsByProject.getOrPut(projectCode) { mutableListOf() }.add(
                 OccupancyContribution(
-                    sourceId = item.getString("_id") ?: continue,
+                    sourceId = item.idString() ?: continue,
                     kind = OccupancyContributionKind.STORAGE_ITEM,
                     cbmDays = contribution,
                     projectCode = projectCode
@@ -125,7 +125,7 @@ class OccupancyAggregator(
                 if (totalQty > 0) {
                     warnings += OccupancyWarning(
                         code = "QBI_NO_DIMENSIONS",
-                        affectedId = item.getString("_id") ?: "?"
+                        affectedId = item.idString() ?: "?"
                     )
                 }
                 continue
@@ -142,7 +142,7 @@ class OccupancyAggregator(
             qbiBuckets.merge(projectCode, contribution, BigDecimal::add)
             contributionsByProject.getOrPut(projectCode) { mutableListOf() }.add(
                 OccupancyContribution(
-                    sourceId = item.getString("_id") ?: continue,
+                    sourceId = item.idString() ?: continue,
                     kind = OccupancyContributionKind.QUANTITY_INVENTORY,
                     cbmDays = contribution,
                     projectCode = projectCode
@@ -168,6 +168,13 @@ class OccupancyAggregator(
     }
 
     // ── helpers ─────────────────────────────────────────────────────
+
+    /**
+     * The document id as text. storage_items ids are numeric (Long) while quantity_based_inventory
+     * ids are strings; `getString("_id")` threw ClassCastException on the first storage item, which
+     * failed the whole billing run - preview included - for any customer with a dated storage item.
+     */
+    private fun Document.idString(): String? = this["_id"]?.toString()
 
     private fun computeStorageItemCbm(doc: Document): BigDecimal? {
         // Prefer pre-computed `dimensions.cbm` if present; otherwise compute.
