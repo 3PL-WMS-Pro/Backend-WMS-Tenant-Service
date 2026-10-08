@@ -57,7 +57,8 @@ class WarehouseJobPayloadBuilder(objectMapper: ObjectMapper) {
         val frozenAt = requireNotNull(invoice.generatedAt) { "V1 invoice requires a stable generatedAt timestamp" }
         val month = YearMonth.parse(invoice.billingMonth)
         val externalReference = invoice.warehouseJobExternalReference
-            ?: "WMS-${invoice.customerId}-${invoice.projectCode ?: "default"}-${invoice.billingMonth}"
+            ?: ("WMS-${invoice.customerId}-${invoice.projectCode ?: "default"}-${invoice.billingMonth}" +
+                (invoice.warehouseId?.let { "-$it" } ?: ""))
 
         val selling = buildList {
             invoice.storageLines.sortedBy { "${it.projectCode}:${it.description}:${it.isMinimumTopUp}" }.forEach { line ->

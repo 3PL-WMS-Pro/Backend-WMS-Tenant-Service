@@ -18,11 +18,13 @@ interface WmsBillingInvoiceRepository : MongoRepository<WmsBillingInvoice, Strin
     fun findAllByCustomerIdAndBillingMonth(customerId: Long, billingMonth: String): List<WmsBillingInvoice>
 
     /**
-     * Phase G idempotency lookup. `projectCode` may be null (default bucket).
+     * Idempotency lookup for one invoice. `projectCode` may be null (default bucket) and
+     * `warehouseId` is null unless the customer is invoiced per warehouse.
      */
-    fun findByCustomerIdAndProjectCodeAndBillingMonth(
+    fun findByCustomerIdAndProjectCodeAndWarehouseIdAndBillingMonth(
         customerId: Long,
         projectCode: String?,
+        warehouseId: String?,
         billingMonth: String
     ): WmsBillingInvoice?
 

@@ -2,6 +2,7 @@ package com.wmspro.tenant.billing.profile
 
 import com.wmspro.common.external.freighai.client.FreighAiChargeTypeClient
 import com.wmspro.tenant.billing.catalog.ServiceCatalogRepository
+import com.wmspro.tenant.billing.invoice.aggregator.WarehouseAttribution
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -26,7 +27,8 @@ import java.time.Instant
 class CustomerBillingProfileService(
     private val repository: CustomerBillingProfileRepository,
     private val freighAiChargeTypeClient: FreighAiChargeTypeClient,
-    private val serviceCatalogRepository: ServiceCatalogRepository
+    private val serviceCatalogRepository: ServiceCatalogRepository,
+    private val warehouseAttribution: WarehouseAttribution
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -52,6 +54,7 @@ class CustomerBillingProfileService(
         )
         validateProjectUniqueness(request.projects.map { it.projectCode })
         validateSubscriptions(request.serviceSubscriptions.map { it.serviceCode })
+        request.warehouseRates?.let { rates -> validateWarehouseRates(rates.map { it.warehouseId }) }
 
         val now = Instant.now()
         val existing = repository.findById(customerId).orElse(null)
@@ -64,6 +67,8 @@ class CustomerBillingProfileService(
                 defaultOutboundCbmRate = request.defaultOutboundCbmRate,
                 defaultMonthlyMinimum = request.defaultMonthlyMinimum,
                 projects = request.projects.map { it.toModel() },
+                invoicePerWarehouse = request.invoicePerWarehouse ?: false,
+                warehouseRates = request.warehouseRates.orEmpty().map { it.toModel() },
                 serviceSubscriptions = request.serviceSubscriptions.map { it.toModel() },
                 freighaiStorageChargeTypeId = request.freighaiStorageChargeTypeId,
                 freighaiInboundMovementChargeTypeId = request.freighaiInboundMovementChargeTypeId,
@@ -81,6 +86,8 @@ class CustomerBillingProfileService(
                 defaultOutboundCbmRate = request.defaultOutboundCbmRate,
                 defaultMonthlyMinimum = request.defaultMonthlyMinimum,
                 projects = request.projects.map { it.toModel() },
+                invoicePerWarehouse = request.invoicePerWarehouse ?: existing.invoicePerWarehouse,
+                warehouseRates = request.warehouseRates?.map { it.toModel() } ?: existing.warehouseRates,
                 serviceSubscriptions = request.serviceSubscriptions.map { it.toModel() },
                 freighaiStorageChargeTypeId = request.freighaiStorageChargeTypeId,
                 freighaiInboundMovementChargeTypeId = request.freighaiInboundMovementChargeTypeId,
@@ -316,6 +323,19 @@ class CustomerBillingProfileService(
         }
     }
 
+    /** One override per warehouse, each for a warehouse that exists. */
+    private fun validateWarehouseRates(warehouseIds: List<String>) {
+        val duplicates = warehouseIds.groupingBy { it }.eachCount().filter { it.value > 1 }.keys
+        if (duplicates.isNotEmpty()) {
+            throw IllegalArgumentException("Duplicate warehouse(s) in request: ${duplicates.joinToString(", ")}")
+        }
+        val known = warehouseAttribution.warehouseNames().keys
+        val unknown = warehouseIds.filter { it !in known }
+        if (unknown.isNotEmpty()) {
+            throw IllegalArgumentException("Unknown warehouse(s): ${unknown.joinToString(", ")}")
+        }
+    }
+
     private fun validateProjectUniqueness(projectCodes: List<String>) {
         val duplicates = projectCodes.groupingBy { it }.eachCount().filter { it.value > 1 }.keys
         if (duplicates.isNotEmpty()) {
@@ -357,6 +377,14 @@ class CustomerBillingProfileService(
         inboundCbmRate = inboundCbmRate,
         outboundCbmRate = outboundCbmRate,
         isActive = isActive
+    )
+
+    private fun WarehouseRateInput.toModel() = WarehouseRate(
+        warehouseId = warehouseId.trim(),
+        cbmRatePerDay = cbmRatePerDay,
+        inboundCbmRate = inboundCbmRate,
+        outboundCbmRate = outboundCbmRate,
+        monthlyMinimum = monthlyMinimum
     )
 
     private fun ServiceSubscriptionInput.toModel() = ServiceSubscription(

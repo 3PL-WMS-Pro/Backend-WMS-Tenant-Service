@@ -3,6 +3,7 @@ package com.wmspro.tenant.billing.adjustment
 import com.wmspro.common.external.freighai.client.*
 import com.wmspro.common.tenant.TenantContext
 import com.wmspro.tenant.billing.invoice.*
+import com.wmspro.tenant.billing.invoice.aggregator.WarehouseAttribution
 import com.wmspro.tenant.billing.snapshot.BillingRunCostSnapshot
 import org.springframework.data.mongodb.core.MongoTemplate
 import org.springframework.data.mongodb.core.query.Criteria
@@ -17,15 +18,37 @@ class SupplierExpenseSyncService(
     private val expenses: SupplierExpenseService,
     private val invoices: WmsBillingInvoiceRepository,
     private val client: FreighAiWarehouseJobClient,
-    private val mongo: MongoTemplate
+    private val mongo: MongoTemplate,
+    private val warehouseAttribution: WarehouseAttribution
 ) {
     fun syncMonth(invoice: WmsBillingInvoice, token: String) {
         expenses.forMonth(invoice.customerId, invoice.billingMonth)
             .filter { it.projectCode == invoice.projectCode && it.state != SupplierExpenseState.SYNCED }
+            .filter { invoice.warehouseId == null || invoiceFor(it)?.billingInvoiceId == invoice.billingInvoiceId }
             .forEach { expense ->
                 try { sync(expense.expenseId, token) }
                 catch (_: Exception) { error(expense, "Expense synchronization needs a retry. The billing run remains saved.") }
             }
+    }
+
+    /**
+     * The invoice an expense belongs to. A customer invoiced per warehouse has one invoice per
+     * warehouse for the same project and month; the expense goes on the one for the warehouse of
+     * the GRN or GIN it is attached to.
+     */
+    private fun invoiceFor(expense: SupplierExpense): WmsBillingInvoice? {
+        val candidates = invoices.findAllByCustomerIdAndBillingMonth(expense.customerId, expense.billingMonth)
+            .filter { it.projectCode == expense.projectCode }
+        if (candidates.size <= 1 || candidates.all { it.warehouseId == null }) {
+            return candidates.firstOrNull { it.warehouseId == null } ?: candidates.singleOrNull()
+        }
+        val warehouseId = when (expense.attachedTo.type) {
+            AdjustmentAttachedType.GRN -> warehouseAttribution.receivingRecordWarehouses(listOf(expense.attachedTo.id))[expense.attachedTo.id]
+            AdjustmentAttachedType.GIN -> warehouseAttribution.fulfillmentWarehouses(
+                listOf(expense.attachedTo.id), warehouseAttribution.warehouseNames().keys
+            )[expense.attachedTo.id]
+        }
+        return candidates.firstOrNull { it.warehouseId == warehouseId }
     }
 
     fun retryPending(token: String) {
@@ -41,7 +64,7 @@ class SupplierExpenseSyncService(
         if (expense.state == SupplierExpenseState.SYNCED) return expense
         mongo.updateFirst(Query.query(Criteria.where("expenseId").`is`(id)),
             Update().set("nextSyncAt", Instant.now().plusSeconds(60)), SupplierExpense::class.java)
-        val invoice = invoices.findByCustomerIdAndProjectCodeAndBillingMonth(expense.customerId, expense.projectCode, expense.billingMonth)
+        val invoice = invoiceFor(expense)
             ?: return expense // Included by a future billing run, even if its selling rate is zero.
         if (invoice.generationContractVersion != "WAREHOUSE_JOB_V1" || invoice.status == BillingInvoiceStatus.CANCELLED || invoice.warehouseJobStatus == "CANCELLED") {
             return error(expense, "This billing period has a legacy or cancelled job. A finance correction is required.")

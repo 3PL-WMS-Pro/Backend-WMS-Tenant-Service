@@ -40,18 +40,27 @@ import java.util.Date
  */
 @Component
 class MovementAggregator(
-    private val mongoTemplate: MongoTemplate
+    private val mongoTemplate: MongoTemplate,
+    private val warehouseAttribution: WarehouseAttribution
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
     private val inboundCompletionStatuses = setOf("RECEIVING_DONE", "PUT_AWAY_DONE", "GRN_SENT")
     private val outboundShippedStatuses = setOf("SHIPPED", "DELIVERED")
 
-    fun aggregateInbound(customerId: Long, billingMonth: YearMonth): InboundMovementResult {
+    /**
+     * @return one result per warehouse when [splitByWarehouse] - a GRN belongs to the warehouse it
+     *         was received into - else a single result under the null key.
+     */
+    fun aggregateInbound(
+        customerId: Long,
+        billingMonth: YearMonth,
+        splitByWarehouse: Boolean = false
+    ): Map<String?, InboundMovementResult> {
         val monthStart = billingMonth.atDay(1)
         val monthEndExclusive = billingMonth.plusMonths(1).atDay(1)
         val warnings = mutableListOf<MovementWarning>()
-        val byProject = mutableMapOf<String?, MovementBucket>()
+        val records = mutableListOf<MovementRecord>()
 
         // Find unbilled receiving_records with any completion status. Filter by
         // statusHistory completion timestamp in JVM (cleaner than constructing
@@ -68,49 +77,47 @@ class MovementAggregator(
             val completionDate = completionTs.toLocalDate()
             if (completionDate.isBefore(monthStart) || !completionDate.isBefore(monthEndExclusive)) continue
 
-            val rrId = rr.getString("_id") ?: continue
+            val rrId = rr["_id"]?.toString() ?: continue
             val projectCode = (rr["projectCode"] as? String)?.takeIf { it.isNotBlank() }
+            val warehouseId = if (splitByWarehouse) (rr["warehouseId"] as? String)?.takeIf { it.isNotBlank() } else null
 
             val (cbm, hadDimensionGap) = computeInboundCbm(rr)
             if (hadDimensionGap) {
                 warnings += MovementWarning(
                     code = "INBOUND_PARTIAL_DIMENSIONS",
-                    recordId = rrId
+                    recordId = rrId,
+                    warehouseId = warehouseId
                 )
             }
             if (cbm.signum() == 0) continue
 
             // Record number for snapshot display, when present (RR uses receivingRecordNumber).
             val recordNumber = (rr["receivingRecordNumber"] as? String) ?: rrId
-            byProject.compute(projectCode) { _, existing ->
-                val newRecord = MovementRecord(recordId = rrId, recordNumber = recordNumber, cbm = cbm, projectCode = projectCode)
-                if (existing == null) {
-                    MovementBucket(totalCbm = cbm, sourceRecordIds = mutableListOf(rrId), records = mutableListOf(newRecord))
-                } else {
-                    MovementBucket(
-                        totalCbm = existing.totalCbm.add(cbm),
-                        sourceRecordIds = (existing.sourceRecordIds + rrId).toMutableList(),
-                        records = (existing.records + newRecord).toMutableList()
-                    )
-                }
-            }
+            records += MovementRecord(recordId = rrId, recordNumber = recordNumber, cbm = cbm, projectCode = projectCode, warehouseId = warehouseId)
         }
 
-        val rounded = byProject.mapValues { (_, b) ->
-            b.copy(totalCbm = b.totalCbm.setScale(4, RoundingMode.HALF_UP))
-        }
+        val results = byWarehouse(records, warnings, splitByWarehouse) { byProject, w -> InboundMovementResult(byProject, w) }
         logger.debug(
-            "Inbound movement aggregation customerId={} month={} → buckets={} warnings={}",
-            customerId, billingMonth, rounded.size, warnings.size
+            "Inbound movement aggregation customerId={} month={} → warehouses={} records={} warnings={}",
+            customerId, billingMonth, results.keys, records.size, warnings.size
         )
-        return InboundMovementResult(rounded, warnings)
+        return results
     }
 
-    fun aggregateOutbound(customerId: Long, billingMonth: YearMonth): OutboundMovementResult {
+    /**
+     * @return one result per warehouse when [splitByWarehouse] - an order belongs to the warehouse
+     *         its goods left from (see [WarehouseAttribution.fulfillmentWarehouses]) - else a single
+     *         result under the null key.
+     */
+    fun aggregateOutbound(
+        customerId: Long,
+        billingMonth: YearMonth,
+        splitByWarehouse: Boolean = false
+    ): Map<String?, OutboundMovementResult> {
         val monthStart = billingMonth.atDay(1)
         val monthEndExclusive = billingMonth.plusMonths(1).atDay(1)
         val warnings = mutableListOf<MovementWarning>()
-        val byProject = mutableMapOf<String?, MovementBucket>()
+        val records = mutableListOf<MovementRecord>()
 
         val ofrQuery = Query(
             Criteria().andOperator(
@@ -118,43 +125,60 @@ class MovementAggregator(
                 Criteria.where("billingInvoiceId").`is`(null)
             )
         )
-        val ofrs = mongoTemplate.find(ofrQuery, Document::class.java, "order_fulfillment_requests")
-        for (ofr in ofrs) {
-            val shippedTs = earliestStatusTimestamp(ofr, outboundShippedStatuses) ?: continue
-            val shippedDate = shippedTs.toLocalDate()
-            if (shippedDate.isBefore(monthStart) || !shippedDate.isBefore(monthEndExclusive)) continue
+        val shipped = mongoTemplate.find(ofrQuery, Document::class.java, "order_fulfillment_requests").filter { ofr ->
+            val shippedDate = earliestStatusTimestamp(ofr, outboundShippedStatuses)?.toLocalDate() ?: return@filter false
+            !shippedDate.isBefore(monthStart) && shippedDate.isBefore(monthEndExclusive)
+        }
+        val shippedFrom = if (splitByWarehouse) {
+            warehouseAttribution.fulfillmentWarehouses(
+                shipped.mapNotNull { it["_id"]?.toString() },
+                warehouseAttribution.warehouseNames().keys
+            )
+        } else emptyMap()
 
-            val ofrId = ofr.getString("_id") ?: continue
+        for (ofr in shipped) {
+            val ofrId = ofr["_id"]?.toString() ?: continue
             val projectCode = (ofr["projectCode"] as? String)?.takeIf { it.isNotBlank() }
+            val warehouseId = shippedFrom[ofrId]
 
             val (cbm, hadDimensionGap) = computeOutboundCbm(ofr)
             if (hadDimensionGap) {
                 warnings += MovementWarning(
                     code = "OUTBOUND_PARTIAL_DIMENSIONS",
-                    recordId = ofrId
+                    recordId = ofrId,
+                    warehouseId = warehouseId
                 )
             }
             if (cbm.signum() == 0) continue
 
             val recordNumber = (ofr["fulfillmentNumber"] as? String) ?: (ofr["ginNumber"] as? String) ?: ofrId
-            byProject.compute(projectCode) { _, existing ->
-                val newRecord = MovementRecord(recordId = ofrId, recordNumber = recordNumber, cbm = cbm, projectCode = projectCode)
-                if (existing == null) {
-                    MovementBucket(totalCbm = cbm, sourceRecordIds = mutableListOf(ofrId), records = mutableListOf(newRecord))
-                } else {
-                    MovementBucket(
-                        totalCbm = existing.totalCbm.add(cbm),
-                        sourceRecordIds = (existing.sourceRecordIds + ofrId).toMutableList(),
-                        records = (existing.records + newRecord).toMutableList()
-                    )
-                }
-            }
+            records += MovementRecord(recordId = ofrId, recordNumber = recordNumber, cbm = cbm, projectCode = projectCode, warehouseId = warehouseId)
         }
 
-        val rounded = byProject.mapValues { (_, b) ->
-            b.copy(totalCbm = b.totalCbm.setScale(4, RoundingMode.HALF_UP))
+        return byWarehouse(records, warnings, splitByWarehouse) { byProject, w -> OutboundMovementResult(byProject, w) }
+    }
+
+    /** Groups records into per-project buckets, per warehouse when splitting (else one null key). */
+    private fun <R> byWarehouse(
+        records: List<MovementRecord>,
+        warnings: List<MovementWarning>,
+        splitByWarehouse: Boolean,
+        build: (Map<String?, MovementBucket>, List<MovementWarning>) -> R
+    ): Map<String?, R> {
+        val warehouses = if (splitByWarehouse) {
+            (records.map { it.warehouseId } + warnings.map { it.warehouseId }).toSet()
+        } else setOf(null)
+        return warehouses.associateWith { warehouseId ->
+            val inWarehouse = records.filter { !splitByWarehouse || it.warehouseId == warehouseId }
+            val byProject = inWarehouse.groupBy { it.projectCode }.mapValues { (_, group) ->
+                MovementBucket(
+                    totalCbm = group.fold(BigDecimal.ZERO) { acc, r -> acc.add(r.cbm) }.setScale(4, RoundingMode.HALF_UP),
+                    sourceRecordIds = group.map { it.recordId }.toMutableList(),
+                    records = group.toMutableList()
+                )
+            }
+            build(byProject, warnings.filter { !splitByWarehouse || it.warehouseId == warehouseId })
         }
-        return OutboundMovementResult(rounded, warnings)
     }
 
     // ── helpers ──────────────────────────────────────────────────────
@@ -299,10 +323,13 @@ data class MovementRecord(
     val recordId: String,
     val recordNumber: String,
     val cbm: BigDecimal,
-    val projectCode: String?
+    val projectCode: String?,
+    /** Per-warehouse invoicing only: the warehouse the GRN was received into / the GIN left from. */
+    val warehouseId: String? = null
 )
 
 data class MovementWarning(
     val code: String,
-    val recordId: String
+    val recordId: String,
+    val warehouseId: String? = null
 )

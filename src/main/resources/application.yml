@@ -119,6 +119,11 @@ app:
     allowed-headers: "*"
     allow-credentials: true
     max-age: 3600
+  billing:
+    # First billing month whose storage is counted pallet-wise (top-level stock only, undated
+    # migrated stock from its first-received date, shipped stock until the day it left). Earlier
+    # months keep the rules they were invoiced under.
+    pallet-wise-counting-from: ${BILLING_PALLET_WISE_COUNTING_FROM:2026-10}
 
 ---
 # Development Profile

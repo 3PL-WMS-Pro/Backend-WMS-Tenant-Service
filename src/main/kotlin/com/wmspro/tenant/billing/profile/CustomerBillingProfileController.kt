@@ -26,7 +26,8 @@ import org.springframework.web.bind.annotation.*
 @RestController
 @RequestMapping("/api/v1/billing-profiles")
 class CustomerBillingProfileController(
-    private val service: CustomerBillingProfileService
+    private val service: CustomerBillingProfileService,
+    private val warehouseAttribution: com.wmspro.tenant.billing.invoice.aggregator.WarehouseAttribution
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -193,6 +194,11 @@ class CustomerBillingProfileController(
         defaultOutboundCbmRate = defaultOutboundCbmRate,
         defaultMonthlyMinimum = defaultMonthlyMinimum,
         projects = projects.map { it.toResponse() },
+        invoicePerWarehouse = invoicePerWarehouse,
+        warehouseRates = warehouseRates.let { rates ->
+            val names = if (rates.isEmpty()) emptyMap() else warehouseAttribution.warehouseNames()
+            rates.map { it.toResponse(names[it.warehouseId] ?: it.warehouseId) }
+        },
         serviceSubscriptions = serviceSubscriptions.map { it.toResponse() },
         freighaiStorageChargeTypeId = freighaiStorageChargeTypeId,
         freighaiInboundMovementChargeTypeId = freighaiInboundMovementChargeTypeId,
@@ -211,6 +217,15 @@ class CustomerBillingProfileController(
         inboundCbmRate = inboundCbmRate,
         outboundCbmRate = outboundCbmRate,
         isActive = isActive
+    )
+
+    private fun WarehouseRate.toResponse(warehouseName: String) = WarehouseRateResponse(
+        warehouseId = warehouseId,
+        warehouseName = warehouseName,
+        cbmRatePerDay = cbmRatePerDay,
+        inboundCbmRate = inboundCbmRate,
+        outboundCbmRate = outboundCbmRate,
+        monthlyMinimum = monthlyMinimum
     )
 
     private fun ServiceSubscription.toResponse() = ServiceSubscriptionResponse(

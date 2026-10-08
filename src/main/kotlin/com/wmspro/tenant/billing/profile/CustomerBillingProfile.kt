@@ -62,6 +62,20 @@ data class CustomerBillingProfile(
 
     val projects: List<ProjectRate> = emptyList(),
 
+    /**
+     * Bill this customer with a separate invoice per warehouse. Off for almost every customer -
+     * most are invoiced once however many warehouses hold their goods - and on only for those that
+     * contract per warehouse. Storage follows where the stock sat each day, inbound follows the
+     * GRN's warehouse, and outbound follows the warehouse the goods left from.
+     */
+    val invoicePerWarehouse: Boolean = false,
+
+    /**
+     * Per-warehouse rate and minimum overrides, used only when [invoicePerWarehouse] is on.
+     * A warehouse without an entry bills at the customer's rates with no minimum.
+     */
+    val warehouseRates: List<WarehouseRate> = emptyList(),
+
     val serviceSubscriptions: List<ServiceSubscription> = emptyList(),
 
     /**
@@ -117,6 +131,23 @@ data class ProjectRate(
     val inboundCbmRate: BigDecimal? = null,
     val outboundCbmRate: BigDecimal? = null,
     val isActive: Boolean = true
+)
+
+/**
+ * Rate and minimum overrides for one warehouse of a customer invoiced per warehouse.
+ *
+ * Resolution at billing time (first non-null wins):
+ *   - rates:   project rate → warehouse rate → customer default → tenant default
+ *   - minimum: `monthlyMinimum`, applied to that warehouse's invoice. The customer-level minimum
+ *              does not apply when invoicing per warehouse - it would be charged once per warehouse.
+ */
+data class WarehouseRate(
+    /** Warehouse id, e.g. "WH1" - the prefix of every bin and zone code in that warehouse. */
+    val warehouseId: String,
+    val cbmRatePerDay: BigDecimal? = null,
+    val inboundCbmRate: BigDecimal? = null,
+    val outboundCbmRate: BigDecimal? = null,
+    val monthlyMinimum: BigDecimal? = null
 )
 
 /**

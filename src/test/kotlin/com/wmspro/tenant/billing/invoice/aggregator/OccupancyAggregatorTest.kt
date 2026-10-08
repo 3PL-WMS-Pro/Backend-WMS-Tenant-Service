@@ -29,7 +29,9 @@ class OccupancyAggregatorTest {
         Mockito.`when`(mongo.find(Mockito.any(Query::class.java), Mockito.eq(Document::class.java), Mockito.eq("quantity_based_inventory")))
             .thenReturn(emptyList())
 
-        val result = OccupancyAggregator(mongo).aggregate(6791L, YearMonth.of(2026, 9))
+        val result = OccupancyAggregator(mongo, Mockito.mock(WarehouseAttribution::class.java))
+            .aggregate(6791L, YearMonth.of(2026, 9))
+            .getValue(null)
 
         // 1 m3 for all 30 days of September
         assertEquals(0, BigDecimal("30").compareTo(result.cbmDaysByProject.getValue(null)))

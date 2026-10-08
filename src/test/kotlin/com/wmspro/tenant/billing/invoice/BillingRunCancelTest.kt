@@ -74,7 +74,9 @@ class BillingRunCancelTest {
             warehouseJobGenerationService = Mockito.mock(com.wmspro.tenant.billing.warehousejob.orchestration.WarehouseJobGenerationService::class.java),
             customerNameResolver = Mockito.mock(CustomerNameResolver::class.java),
             supplierExpenses = Mockito.mock(com.wmspro.tenant.billing.adjustment.SupplierExpenseService::class.java),
-            supplierExpenseSync = Mockito.mock(com.wmspro.tenant.billing.adjustment.SupplierExpenseSyncService::class.java)
+            supplierExpenseSync = Mockito.mock(com.wmspro.tenant.billing.adjustment.SupplierExpenseSyncService::class.java),
+            warehouseAttribution = Mockito.mock(com.wmspro.tenant.billing.invoice.aggregator.WarehouseAttribution::class.java),
+            invoiceIndexMigration = Mockito.mock(BillingInvoiceIndexMigration::class.java)
         )
     }
 

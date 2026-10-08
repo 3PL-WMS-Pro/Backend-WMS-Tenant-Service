@@ -45,7 +45,7 @@ class WarehouseJobStandaloneFreezeTest {
         TenantContext.setCurrentTenant("199")
         MongoConnectionStorage.setConnection("mongodb://localhost/wms_pro_tenant_199")
         Mockito.`when`(invoices.existsById("wmsinv-1")).thenReturn(false)
-        Mockito.`when`(invoices.findByCustomerIdAndProjectCodeAndBillingMonth(1, null, "2026-08")).thenReturn(null)
+        Mockito.`when`(invoices.findByCustomerIdAndProjectCodeAndWarehouseIdAndBillingMonth(1, null, null, "2026-08")).thenReturn(null)
         Mockito.`when`(snapshots.existsById("candidate-snapshot")).thenReturn(false)
     }
 

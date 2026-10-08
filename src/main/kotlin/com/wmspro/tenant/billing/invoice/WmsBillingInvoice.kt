@@ -36,7 +36,15 @@ import java.time.LocalDate
 // customer has multiple projects, we emit one invoice per project plus
 // one "default" invoice for any project-untagged activity (Option 1).
 // Old `customer_month_unique_idx` was dropped during the Phase G migration.
-@CompoundIndex(name = "customer_project_month_unique_idx", def = "{'customerId': 1, 'projectCode': 1, 'billingMonth': 1}", unique = true)
+// Per-warehouse invoicing: a customer that opts in gets one invoice per (project, warehouse), so the
+// warehouse joins the key. Absent warehouseId indexes as null, which keeps every existing invoice
+// unique on exactly the fields it was unique on before. The old index is dropped by
+// [BillingInvoiceIndexMigration] - Spring creates new indexes but never drops old ones.
+@CompoundIndex(
+    name = "customer_project_warehouse_month_unique_idx",
+    def = "{'customerId': 1, 'projectCode': 1, 'warehouseId': 1, 'billingMonth': 1}",
+    unique = true
+)
 @CompoundIndex(name = "sync_target_idx", def = "{'status': 1, 'freighaiStatus': 1, 'lastSyncedAt': 1}")
 @CompoundIndex(
     name = "wj_v1_external_reference_uq",
@@ -59,6 +67,14 @@ data class WmsBillingInvoice(
      */
     @Indexed
     val projectCode: String? = null,
+
+    /**
+     * Warehouse this invoice covers, for a customer billed separately per warehouse
+     * (`CustomerBillingProfile.invoicePerWarehouse`). Null for everyone else, and for charges that
+     * could not be tied to a warehouse.
+     */
+    @Field(write = Field.Write.NON_NULL)
+    val warehouseId: String? = null,
 
     /** ISO yearmonth, e.g. "2026-04". */
     @Indexed
@@ -250,7 +266,10 @@ data class StorageLine(
     val description: String,
     val freighaiChargeTypeId: String,
     /** True for the synthesised top-up line when `defaultMonthlyMinimum` triggered. */
-    val isMinimumTopUp: Boolean = false
+    val isMinimumTopUp: Boolean = false,
+    /** Per-warehouse invoicing only: the warehouse this line belongs to. */
+    val warehouseId: String? = null,
+    val warehouseName: String? = null
 )
 
 data class MovementLine(
@@ -265,7 +284,10 @@ data class MovementLine(
     val description: String,
     val freighaiChargeTypeId: String,
     /** ReceivingRecord IDs (INBOUND) or fulfillmentIds (OUTBOUND) — for lock cascade + traceback. */
-    val sourceRecordIds: List<String> = emptyList()
+    val sourceRecordIds: List<String> = emptyList(),
+    /** Per-warehouse invoicing only: the warehouse this line belongs to. */
+    val warehouseId: String? = null,
+    val warehouseName: String? = null
 )
 
 enum class MovementDirection { INBOUND, OUTBOUND }
@@ -288,7 +310,10 @@ data class ServiceLine(
      * bucket. Each per-project invoice contains only its own project's
      * service lines.
      */
-    val projectCode: String? = null
+    val projectCode: String? = null,
+    /** Per-warehouse invoicing only: the warehouse this line belongs to. */
+    val warehouseId: String? = null,
+    val warehouseName: String? = null
 )
 
 data class SubmissionAttempt(

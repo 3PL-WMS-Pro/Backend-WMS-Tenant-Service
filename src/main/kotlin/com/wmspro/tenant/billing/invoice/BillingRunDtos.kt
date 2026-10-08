@@ -15,7 +15,12 @@ data class BillingPreviewRequest(
     @field:NotNull val customerId: Long,
     @field:NotBlank
     @field:Pattern(regexp = "^\\d{4}-\\d{2}$", message = "billingMonth must be YYYY-MM")
-    val billingMonth: String
+    val billingMonth: String,
+    /**
+     * Preview a month under rules other than the ones it is billed under - e.g. an already-billed
+     * month counted pallet-wise, to show the effect of the cut-over. Generate never accepts this.
+     */
+    val countingRules: com.wmspro.tenant.billing.invoice.aggregator.CountingRules? = null
 )
 
 /**
@@ -72,7 +77,11 @@ data class BillingPreviewResponse(
     /** True if a SUBMITTED invoice already exists; generate would no-op. */
     val alreadyGenerated: Boolean,
     val existingInvoiceId: String? = null,
-    val supplierExpenses: List<com.wmspro.tenant.billing.adjustment.SupplierExpense> = emptyList()
+    val supplierExpenses: List<com.wmspro.tenant.billing.adjustment.SupplierExpense> = emptyList(),
+    /** True when this customer gets one invoice per warehouse; each line carries its warehouse. */
+    val invoicePerWarehouse: Boolean = false,
+    /** The storage-counting rules this preview used. */
+    val countingRules: com.wmspro.tenant.billing.invoice.aggregator.CountingRules? = null
 )
 
 data class DataQualityWarning(
@@ -92,6 +101,8 @@ data class WmsBillingInvoiceResponse(
     val billingMonth: String,
     /** Phase G — project bucket this invoice covers; null = default bucket. */
     val projectCode: String?,
+    /** Warehouse this invoice covers, for customers invoiced per warehouse; null otherwise. */
+    val warehouseId: String? = null,
     val status: BillingInvoiceStatus,
     val storageLines: List<StorageLine>,
     val movementLines: List<MovementLine>,

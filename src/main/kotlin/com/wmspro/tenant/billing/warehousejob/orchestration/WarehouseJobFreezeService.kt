@@ -80,9 +80,10 @@ class WarehouseJobFreezeService(
                 "CUTOVER_CONFLICT: snapshot '$existingSnapshotId' already exists; V1 never adopts or rewrites stored cost evidence"
             )
         }
-        val existing = invoiceRepository.findByCustomerIdAndProjectCodeAndBillingMonth(
+        val existing = invoiceRepository.findByCustomerIdAndProjectCodeAndWarehouseIdAndBillingMonth(
             candidateInvoice.customerId,
             candidateInvoice.projectCode,
+            candidateInvoice.warehouseId,
             candidateInvoice.billingMonth
         )
         if (existing != null) {
@@ -92,7 +93,9 @@ class WarehouseJobFreezeService(
         }
 
         val payloadVersion = 1L
-        val externalReference = "WMS-${candidateInvoice.customerId}-${candidateInvoice.projectCode ?: "default"}-${candidateInvoice.billingMonth}"
+        // One Warehouse Job per invoice, so a per-warehouse invoice's reference carries its warehouse.
+        val externalReference = "WMS-${candidateInvoice.customerId}-${candidateInvoice.projectCode ?: "default"}-${candidateInvoice.billingMonth}" +
+            (candidateInvoice.warehouseId?.let { "-$it" } ?: "")
         val markedSnapshots = candidateSnapshots.map { snapshot ->
             require(snapshot.billingInvoiceId == candidateInvoice.billingInvoiceId) { "Snapshot belongs to another invoice" }
             require(!snapshot.costTreatment.isNullOrBlank()) { "V1 snapshot requires explicit costTreatment" }

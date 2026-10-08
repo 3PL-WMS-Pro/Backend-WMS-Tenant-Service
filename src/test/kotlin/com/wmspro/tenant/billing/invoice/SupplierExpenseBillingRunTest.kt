@@ -6,6 +6,8 @@ import com.wmspro.tenant.billing.adjustment.*
 import com.wmspro.tenant.billing.catalog.ServiceCatalogRepository
 import com.wmspro.tenant.billing.costs.TenantOperationalCostsService
 import com.wmspro.tenant.billing.defaults.TenantBillingDefaultsService
+import com.wmspro.tenant.billing.invoice.aggregator.CountingRules
+import com.wmspro.tenant.billing.invoice.aggregator.WarehouseAttribution
 import com.wmspro.tenant.billing.invoice.aggregator.*
 import com.wmspro.tenant.billing.invoice.cascade.WmsInternalCascadeClient
 import com.wmspro.tenant.billing.profile.*
@@ -55,10 +57,10 @@ class SupplierExpenseBillingRunTest {
             defaultOutboundCbmRate = BigDecimal.ZERO, billingEnabled = true,
             freighaiStorageChargeTypeId = "CHG-1", freighaiInboundMovementChargeTypeId = "CHG-1", freighaiOutboundMovementChargeTypeId = "CHG-1")))
         `when`(charges.listChargeTypes("token", false)).thenReturn(listOf(FreighAiChargeType("CHG-1", "Handling", BigDecimal.ZERO)))
-        `when`(occupancy.aggregate(42, month)).thenReturn(OccupancyResult(emptyMap(), emptyList()))
-        `when`(movement.aggregateInbound(42, month)).thenReturn(InboundMovementResult(emptyMap(), emptyList()))
-        `when`(movement.aggregateOutbound(42, month)).thenReturn(OutboundMovementResult(emptyMap(), emptyList()))
-        `when`(services.aggregate(42, month)).thenReturn(emptyMap())
+        `when`(occupancy.aggregate(42, month, CountingRules.LEGACY, false)).thenReturn(mapOf(null to OccupancyResult(emptyMap(), emptyList())))
+        `when`(movement.aggregateInbound(42, month, false)).thenReturn(mapOf(null to InboundMovementResult(emptyMap(), emptyList())))
+        `when`(movement.aggregateOutbound(42, month, false)).thenReturn(mapOf(null to OutboundMovementResult(emptyMap(), emptyList())))
+        `when`(services.aggregate(42, month, false)).thenReturn(emptyMap())
         `when`(expenses.forMonth(42, month.toString())).thenReturn(listOf(expense))
         `when`(names.resolve(setOf(42L), "token")).thenReturn(mapOf(42L to "Customer"))
         `when`(mappings.findById(42)).thenReturn(Optional.of(AccountIdMapping(42, "cust-42", "ABCDEF", "synthetic")))
@@ -67,8 +69,10 @@ class SupplierExpenseBillingRunTest {
             mock(FreighAiInvoiceClient::class.java), charges, mock(WmsInternalCascadeClient::class.java),
             mock(TenantBillingDefaultsService::class.java), mock(TenantOperationalCostsService::class.java),
             mock(BillingRunCostSnapshotRepository::class.java), mock(MovementCostAdjustmentService::class.java),
-            generator, names, expenses, mock(SupplierExpenseSyncService::class.java))
+            generator, names, expenses, mock(SupplierExpenseSyncService::class.java),
+            mock(WarehouseAttribution::class.java), mock(BillingInvoiceIndexMigration::class.java))
         ReflectionTestUtils.setField(service, "aedCurrencyId", "CUR-AED")
+        ReflectionTestUtils.setField(service, "palletWiseCountingFrom", "2026-10")
         assertEquals(1, service.generate(42, month.toString(), "manager", "token").size)
         val invoice = requireNotNull(generatedInvoice)
         assertEquals("PROJECT_A", invoice.projectCode)

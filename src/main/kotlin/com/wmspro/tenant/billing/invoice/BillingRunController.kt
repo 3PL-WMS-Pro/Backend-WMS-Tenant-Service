@@ -75,7 +75,7 @@ class BillingRunController(
     ): ResponseEntity<ApiResponse<BillingPreviewResponse>> {
         val authToken = httpRequest.getHeader(HttpHeaders.AUTHORIZATION).orEmpty()
         return try {
-            val preview = service.preview(request.customerId, request.billingMonth, authToken)
+            val preview = service.preview(request.customerId, request.billingMonth, authToken, request.countingRules)
             ResponseEntity.ok(ApiResponse.success(preview, "Preview ready"))
         } catch (e: Exception) {
             logger.error("preview failed", e)
@@ -275,6 +275,7 @@ internal fun WmsBillingInvoice.toResponse(customerNamesById: Map<Long, String> =
     customerName = customerNamesById[customerId],
     billingMonth = billingMonth,
     projectCode = projectCode,
+    warehouseId = warehouseId,
     status = status,
     storageLines = storageLines,
     movementLines = movementLines,

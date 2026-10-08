@@ -39,6 +39,16 @@ data class UpsertCustomerBillingProfileRequest(
     @field:Valid
     val serviceSubscriptions: List<ServiceSubscriptionInput> = emptyList(),
 
+    /**
+     * Separate invoice per warehouse. Null keeps the stored setting, so a caller that predates the
+     * field cannot switch it off by omission.
+     */
+    val invoicePerWarehouse: Boolean? = null,
+
+    /** Per-warehouse rate and minimum overrides. Null keeps the stored list. */
+    @field:Valid
+    val warehouseRates: List<WarehouseRateInput>? = null,
+
     /** Phase A: optional. Null → inherit from TenantBillingDefaults. */
     val freighaiStorageChargeTypeId: String? = null,
 
@@ -81,6 +91,25 @@ data class ProjectRateInput(
     val outboundCbmRate: BigDecimal? = null,
 
     val isActive: Boolean = true
+)
+
+/** Embedded warehouse override inside [UpsertCustomerBillingProfileRequest]. */
+data class WarehouseRateInput(
+    @field:NotBlank(message = "warehouseId is required")
+    @field:Size(max = 64, message = "warehouseId must be at most 64 characters")
+    val warehouseId: String,
+
+    @field:PositiveOrZero(message = "cbmRatePerDay must be ≥ 0")
+    val cbmRatePerDay: BigDecimal? = null,
+
+    @field:PositiveOrZero(message = "inboundCbmRate must be ≥ 0")
+    val inboundCbmRate: BigDecimal? = null,
+
+    @field:PositiveOrZero(message = "outboundCbmRate must be ≥ 0")
+    val outboundCbmRate: BigDecimal? = null,
+
+    @field:PositiveOrZero(message = "monthlyMinimum must be ≥ 0")
+    val monthlyMinimum: BigDecimal? = null
 )
 
 data class ServiceSubscriptionInput(
@@ -177,6 +206,8 @@ data class CustomerBillingProfileResponse(
     val defaultOutboundCbmRate: BigDecimal?,
     val defaultMonthlyMinimum: BigDecimal?,
     val projects: List<ProjectRateResponse>,
+    val invoicePerWarehouse: Boolean,
+    val warehouseRates: List<WarehouseRateResponse>,
     val serviceSubscriptions: List<ServiceSubscriptionResponse>,
     val freighaiStorageChargeTypeId: String?,
     val freighaiInboundMovementChargeTypeId: String?,
@@ -195,6 +226,16 @@ data class ProjectRateResponse(
     val inboundCbmRate: BigDecimal?,
     val outboundCbmRate: BigDecimal?,
     val isActive: Boolean
+)
+
+data class WarehouseRateResponse(
+    val warehouseId: String,
+    /** Display name from the warehouse master; the id when the warehouse no longer exists. */
+    val warehouseName: String,
+    val cbmRatePerDay: BigDecimal?,
+    val inboundCbmRate: BigDecimal?,
+    val outboundCbmRate: BigDecimal?,
+    val monthlyMinimum: BigDecimal?
 )
 
 data class ServiceSubscriptionResponse(
