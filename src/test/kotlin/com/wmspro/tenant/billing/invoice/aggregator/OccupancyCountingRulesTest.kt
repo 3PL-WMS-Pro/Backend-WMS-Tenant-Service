@@ -77,6 +77,39 @@ class OccupancyCountingRulesTest {
         assertEquals(0, BigDecimal(10).compareTo(result.getValue("WH2").cbmDaysByProject.getValue(null)))
     }
 
+    /**
+     * A pallet rebuilt while stock is organised is re-measured. It bills at its old size up to the
+     * change day and at the new size from it, and the month before the change - already invoiced -
+     * re-runs at the size it was billed at.
+     */
+    @Test
+    fun `a re-measured pallet bills each day at the size it had that day`() {
+        val mongo = Mockito.mock(MongoTemplate::class.java)
+        val halfCubicMetre = Document(mapOf("lengthCm" to 100.0, "widthCm" to 100.0, "heightCm" to 50.0, "cbm" to 0.5))
+        val rebuilt = item(1, "PALLET", createdAt = "2026-09-01", children = listOf(99L)).apply {
+            put("dimensions", halfCubicMetre)
+            put("dimensionHistory", listOf(Document(mapOf(
+                "effectiveFrom" to Date.from(Instant.parse("2026-10-21T08:00:00Z")),
+                "previous" to Document(mapOf("lengthCm" to 100.0, "widthCm" to 100.0, "heightCm" to 100.0, "cbm" to 1.0)),
+                "current" to halfCubicMetre
+            ))))
+        }
+        stub(mongo, "storage_items", rebuilt)
+        stub(mongo, "receiving_records")
+        stub(mongo, "item_transactions")
+        stub(mongo, "quantity_based_inventory")
+        val aggregator = OccupancyAggregator(mongo, WarehouseAttribution(mongo))
+
+        val october = aggregator.aggregate(6995L, october, CountingRules.PALLET_WISE).getValue(null)
+        val september = aggregator.aggregate(6995L, YearMonth.of(2026, 9), CountingRules.LEGACY).getValue(null)
+
+        // 1-20 Oct at 1 m3, 21-31 Oct (the change day onwards) at 0.5 m3.
+        assertEquals(0, BigDecimal("25.5").compareTo(october.cbmDaysByProject.getValue(null)))
+        assertEquals(1, october.contributionsByProject.getValue(null).size, "still one contribution per item")
+        // September is untouched by an October change.
+        assertEquals(0, BigDecimal(30).compareTo(september.cbmDaysByProject.getValue(null)))
+    }
+
     @Test
     fun `months before the cut-over keep the legacy rules they were invoiced under`() {
         assertEquals(CountingRules.LEGACY, CountingRules.forMonth(YearMonth.of(2026, 9), october))

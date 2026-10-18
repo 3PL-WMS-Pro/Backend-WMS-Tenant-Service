@@ -41,6 +41,10 @@ import java.util.Date
  *   - an empty pallet or box no receipt created (minted for re-palletisation) does not count
  *   - QBI: top-level lots only, from the GRN's receiving date when earlier
  *
+ * Under both rules a storage item counts each day at the size it had that day: a pallet re-measured
+ * mid-month counts at its old size before the change day and its new size from it
+ * (`dimensionHistory`), so re-running a month already invoiced reproduces what was billed.
+ *
  * Result is grouped by `projectCode` (null = "Unassigned" → bills at customer
  * default rate). CBM-days is rounded to 4 decimal places at aggregation time.
  *
@@ -90,9 +94,10 @@ class OccupancyAggregator(
         if (!splitByWarehouse) byWarehouse[null] = Buckets()
         for (piece in pieces) {
             for (segment in piece.segments) {
-                val days = daysBetween(maxOf(piece.inDate, segment.from), minOf(piece.outDateExclusive, segment.toExclusive))
-                if (days <= 0) continue
-                val contribution = piece.cbm.multiply(BigDecimal(days))
+                val from = maxOf(piece.inDate, segment.from)
+                val to = minOf(piece.outDateExclusive, segment.toExclusive)
+                if (daysBetween(from, to) <= 0) continue
+                val contribution = cbmDays(piece, from, to)
                 byWarehouse.getOrPut(segment.warehouseId) { Buckets() }.add(piece, contribution)
             }
         }
@@ -190,7 +195,7 @@ class OccupancyAggregator(
                 sourceId = item.idString() ?: continue,
                 kind = OccupancyContributionKind.STORAGE_ITEM,
                 projectCode = (item["projectCode"] as? String)?.takeIf { it.isNotBlank() },
-                cbm = cbm,
+                cbmPeriods = storageItemCbmPeriods(item, cbm),
                 inDate = inDate,
                 outDateExclusive = outDate,
                 segments = segments
@@ -259,7 +264,7 @@ class OccupancyAggregator(
                 sourceId = item.idString() ?: continue,
                 kind = OccupancyContributionKind.QUANTITY_INVENTORY,
                 projectCode = (item["projectCode"] as? String)?.takeIf { it.isNotBlank() },
-                cbm = cbmPerUnit.multiply(BigDecimal(totalQty)),
+                cbmPeriods = listOf(CbmPeriod(null, null, cbmPerUnit.multiply(BigDecimal(totalQty)))),
                 inDate = inDate,
                 outDateExclusive = outDate,
                 segments = listOf(WarehouseSegment(lotWarehouse, monthStart, monthEndExclusive))
@@ -405,13 +410,50 @@ class OccupancyAggregator(
      */
     private fun Document.idString(): String? = this["_id"]?.toString()
 
-    private fun computeStorageItemCbm(doc: Document): BigDecimal? {
-        // Prefer pre-computed `dimensions.cbm` if present; otherwise compute.
-        val dims = doc["dimensions"] as? Document ?: return null
+    private fun computeStorageItemCbm(doc: Document): BigDecimal? = cbmOf(doc["dimensions"] as? Document)
+
+    /** Prefer pre-computed `cbm` if present; otherwise compute from the measurements. */
+    private fun cbmOf(dims: Document?): BigDecimal? {
+        if (dims == null) return null
         val cached = dims["cbm"] as? Number
         if (cached != null) return BigDecimal(cached.toString())
         return computeCbmFromDimensions(dims)
     }
+
+    /**
+     * The CBM in effect over each stretch of days, from the item's size history
+     * (`dimensionHistory`, written when a pallet or box is re-measured). A change counts from its
+     * own day: the days before it keep the size stored as `previous` - its stored CBM included, so a
+     * month already invoiced re-runs to exactly what was billed. An item never re-measured has one
+     * open-ended period at its current size.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun storageItemCbmPeriods(item: Document, currentCbm: BigDecimal): List<CbmPeriod> {
+        val changes = (item["dimensionHistory"] as? List<*>).orEmpty()
+            .mapNotNull { it as? Document }
+            .mapNotNull { change ->
+                val day = (change["effectiveFrom"] as? Date)?.let(::dateToLocalDate) ?: return@mapNotNull null
+                day to (cbmOf(change["previous"] as? Document) ?: BigDecimal.ZERO)
+            }
+            .sortedBy { it.first }
+        if (changes.isEmpty()) return listOf(CbmPeriod(null, null, currentCbm))
+
+        val periods = mutableListOf<CbmPeriod>()
+        var from: LocalDate? = null
+        for ((changeDay, previousCbm) in changes) {
+            periods += CbmPeriod(from, changeDay, previousCbm)
+            from = changeDay
+        }
+        periods += CbmPeriod(from, null, currentCbm)
+        return periods
+    }
+
+    /** CBM-days for [piece] between [from] and [toExclusive], each day at the size it had then. */
+    private fun cbmDays(piece: OccupancyPiece, from: LocalDate, toExclusive: LocalDate): BigDecimal =
+        piece.cbmPeriods.fold(BigDecimal.ZERO) { total, period ->
+            val days = daysBetween(maxOf(from, period.from ?: from), minOf(toExclusive, period.toExclusive ?: toExclusive))
+            if (days <= 0) total else total.add(period.cbm.multiply(BigDecimal(days)))
+        }
 
     private fun computeQbiCbmPerUnit(doc: Document): BigDecimal? {
         val dims = doc["dimensions"] as? Document ?: return null
@@ -483,12 +525,15 @@ class OccupancyAggregator(
 
     private data class WarehouseSegment(val warehouseId: String?, val from: LocalDate, val toExclusive: LocalDate)
 
-    /** One storage item or QBI lot, with the days it was present and where it sat. */
+    /** A CBM that held from [from] (inclusive) to [toExclusive]; null ends are open. */
+    private data class CbmPeriod(val from: LocalDate?, val toExclusive: LocalDate?, val cbm: BigDecimal)
+
+    /** One storage item or QBI lot, with the days it was present, the size it had and where it sat. */
     private data class OccupancyPiece(
         val sourceId: String,
         val kind: OccupancyContributionKind,
         val projectCode: String?,
-        val cbm: BigDecimal,
+        val cbmPeriods: List<CbmPeriod>,
         val inDate: LocalDate,
         val outDateExclusive: LocalDate,
         val segments: List<WarehouseSegment>
