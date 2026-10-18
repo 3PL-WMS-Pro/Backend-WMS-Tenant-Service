@@ -17,6 +17,7 @@ import org.springframework.data.mongodb.core.query.Update
 import org.springframework.stereotype.Component
 import org.springframework.stereotype.Service
 import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
@@ -227,7 +228,14 @@ class WarehouseSalesInvoiceOutboxHandler(
             "Frozen WMS selling lines do not match the Warehouse Job snapshot"
         }
         val lines = wj.commercialSnapshot.sellingLines.mapIndexed { index, line ->
-            val flatFee = line.quantity.signum() == 0 && line.unitPrice.signum() == 0 && line.netAmount.signum() > 0
+            // FreighAI recomputes a line as quantity x unit price and rejects allocations more than
+            // 0.01 away from it. A monthly minimum is written as minimum / rate CBM-days rounded to
+            // two places (540 / 65 = 8.31), which multiplies back to 540.15 - so any line that does
+            // not reproduce its own amount goes as one unit at that amount.
+            val reproducesAmount = line.quantity.multiply(line.unitPrice).setScale(2, RoundingMode.HALF_UP)
+                .compareTo(line.netAmount.setScale(2, RoundingMode.HALF_UP)) == 0
+            val flatFee = line.netAmount.signum() > 0 &&
+                ((line.quantity.signum() == 0 && line.unitPrice.signum() == 0) || !reproducesAmount)
             FreighAiInvoiceLineItem(
                 lineId = line.lineId,
                 description = line.description,

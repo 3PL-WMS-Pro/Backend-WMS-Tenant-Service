@@ -31,6 +31,26 @@ class WarehouseJobPayloadBuilderTest {
         assertEquals("charge-1", first.request.commercialSnapshot.sellingLines.single().serviceCode)
     }
 
+    /**
+     * DENASTER is invoiced per warehouse. FreighAI keys its one-job-per-month rule on the warehouse
+     * the job carries, so without it the DIP and Ajman jobs collided and neither could be created.
+     */
+    @Test
+    fun `a per-warehouse invoice tells FreighAI which warehouse its job is for`() {
+        val base = invoice("WAREHOUSE_JOB_V1")
+        val ajman = base.copy(
+            warehouseId = "WH2",
+            storageLines = base.storageLines.map { it.copy(warehouseId = "WH2", warehouseName = "Infinity Ajman Warehouse") }
+        )
+
+        val context = builder.build("tenant-1", ajman, listOf(snapshot()), "Customer", "AED", 1).request.warehouseContext
+        val whole = builder.build("tenant-1", base, listOf(snapshot()), "Customer", "AED", 1).request.warehouseContext
+
+        assertEquals("WH2", context.warehouseId)
+        assertEquals("Infinity Ajman Warehouse", context.warehouseName)
+        assertEquals(null, whole.warehouseId)
+    }
+
     @Test
     fun `unmarked legacy invoice is rejected`() {
         assertThrows(IllegalArgumentException::class.java) {

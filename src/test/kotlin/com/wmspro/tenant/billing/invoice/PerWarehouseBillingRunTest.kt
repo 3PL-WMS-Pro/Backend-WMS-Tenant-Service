@@ -30,6 +30,42 @@ import java.util.Optional
 class PerWarehouseBillingRunTest {
     @Test
     fun `a customer invoiced per warehouse gets one invoice per warehouse with its own rate and minimum`() {
+        val (result, generated) = generateDenaster(mock(DiscardedBillingInvoices::class.java))
+
+        assertEquals(listOf("WH1", "WH2"), result.map { it.warehouseId })
+        val dip = generated.single { it.warehouseId == "WH1" }
+        val ajman = generated.single { it.warehouseId == "WH2" }
+        // Each warehouse is topped up to its own minimum, not the customer's 2,985.
+        assertEquals(0, BigDecimal("775").compareTo(dip.subtotal))
+        assertEquals(0, BigDecimal("2210").compareTo(ajman.subtotal))
+        assertEquals(0, BigDecimal("1.50").compareTo(dip.storageLines.single().ratePerDay))
+        assertEquals("Storage – October 2026 – Infinity DIP Warehouse", dip.storageLines.single().description)
+        assertEquals("WMS-6995-default-2026-10-WH1", dip.freighaiReferenceNo)
+        assertNotEquals(dip.billingInvoiceId, ajman.billingInvoiceId)
+    }
+
+    /**
+     * A month whose earlier DIP invoice was discarded (its settings changed after the run): the
+     * regenerated invoice takes its own reference and id, because the discarded one's cancelled
+     * Sales Invoice and Warehouse Job keep the original in FreighAI.
+     */
+    @Test
+    fun `a regenerated warehouse month takes its own reference after a discard`() {
+        val discarded = mock(DiscardedBillingInvoices::class.java)
+        `when`(discarded.countFor(6995, null, "WH1", "2026-10")).thenReturn(1)
+
+        val (_, generated) = generateDenaster(discarded)
+
+        val dip = generated.single { it.warehouseId == "WH1" }
+        val ajman = generated.single { it.warehouseId == "WH2" }
+        assertEquals("WMS-6995-default-2026-10-WH1-R2", dip.freighaiReferenceNo)
+        assertEquals("WMS-6995-default-2026-10-WH2", ajman.freighaiReferenceNo)
+        val (_, firstTime) = generateDenaster(mock(DiscardedBillingInvoices::class.java))
+        assertNotEquals(firstTime.single { it.warehouseId == "WH1" }.billingInvoiceId, dip.billingInvoiceId)
+        assertEquals(firstTime.single { it.warehouseId == "WH2" }.billingInvoiceId, ajman.billingInvoiceId)
+    }
+
+    private fun generateDenaster(discarded: DiscardedBillingInvoices): Pair<List<WmsBillingInvoice>, List<WmsBillingInvoice>> {
         val month = YearMonth.of(2026, 10)
         val invoices = mock(WmsBillingInvoiceRepository::class.java)
         val profiles = mock(CustomerBillingProfileRepository::class.java)
@@ -81,21 +117,11 @@ class PerWarehouseBillingRunTest {
             mock(TenantBillingDefaultsService::class.java), mock(TenantOperationalCostsService::class.java),
             mock(BillingRunCostSnapshotRepository::class.java), mock(MovementCostAdjustmentService::class.java),
             generator, names, expenses, mock(SupplierExpenseSyncService::class.java),
-            attribution, mock(BillingInvoiceIndexMigration::class.java))
+            attribution, mock(BillingInvoiceIndexMigration::class.java), discarded)
         ReflectionTestUtils.setField(service, "aedCurrencyId", "CUR-AED")
         ReflectionTestUtils.setField(service, "palletWiseCountingFrom", "2026-10")
 
         val result = service.generate(6995, month.toString(), "manager", "token")
-
-        assertEquals(listOf("WH1", "WH2"), result.map { it.warehouseId })
-        val dip = generated.single { it.warehouseId == "WH1" }
-        val ajman = generated.single { it.warehouseId == "WH2" }
-        // Each warehouse is topped up to its own minimum, not the customer's 2,985.
-        assertEquals(0, BigDecimal("775").compareTo(dip.subtotal))
-        assertEquals(0, BigDecimal("2210").compareTo(ajman.subtotal))
-        assertEquals(0, BigDecimal("1.50").compareTo(dip.storageLines.single().ratePerDay))
-        assertEquals("Storage – October 2026 – Infinity DIP Warehouse", dip.storageLines.single().description)
-        assertEquals("WMS-6995-default-2026-10-WH1", dip.freighaiReferenceNo)
-        assertNotEquals(dip.billingInvoiceId, ajman.billingInvoiceId)
+        return result to generated
     }
 }

@@ -91,6 +91,66 @@ class WarehouseSalesInvoiceOutboxHandlerTest {
         })
     }
 
+    /**
+     * NAFIS SIKDER's September minimum (540) was written as 540 / 65 = 8.31 CBM-days at 65. FreighAI
+     * recomputed the line as 8.31 x 65 = 540.15 and rejected the 540.00 allocation, so the invoice
+     * sat on "Generating..." for good. A line that does not reproduce its amount goes as one unit.
+     */
+    @Test
+    fun `a line whose quantity times rate misses its amount is sent as one unit at that amount`() {
+        val wj = warehouseRequest().let { request ->
+            val minimum = WarehouseJobSellingLine(
+                lineId = "S", description = "Warehousing - September 2026", serviceCode = "CHG-S",
+                quantity = BigDecimal("8.31"), unit = "CBM-day", unitPrice = BigDecimal("65"),
+                netAmount = BigDecimal("540.00"), grossAmount = BigDecimal("540.00")
+            )
+            request.copy(commercialSnapshot = request.commercialSnapshot.copy(
+                sellingLines = listOf(minimum) + request.commercialSnapshot.sellingLines.drop(1)
+            ))
+        }
+
+        val lines = createdLines(wj)
+
+        val storage = lines.first()
+        assertEquals(0, BigDecimal.ONE.compareTo(storage.quantity))
+        assertEquals(0, BigDecimal("540.00").compareTo(storage.unitPrice))
+        // Lines that already multiply out are sent as they are.
+        assertEquals(0, BigDecimal.TEN.compareTo(lines[1].unitPrice))
+    }
+
+    private fun createdLines(wj: CreateFreighAiWarehouseJobRequest): List<FreighAiInvoiceLineItem> {
+        val outbox = Mockito.mock(WarehouseJobOutboxRepository::class.java)
+        val finance = Mockito.mock(FreighAiInvoiceClient::class.java)
+        val binding = Mockito.mock(WarehouseJobBindingService::class.java)
+        val handler = WarehouseSalesInvoiceOutboxHandler(mapper, outbox, finance, binding)
+        ReflectionTestUtils.setField(handler, "currencyId", "CUR-AED")
+        val local = invoice()
+        val predecessor = WarehouseJobOutbox(
+            outboxId = "wj-1", billingInvoiceId = local.billingInvoiceId, payloadVersion = 1,
+            operation = WarehouseJobOutboxOperation.UPSERT_WJ, idempotencyKey = "wj-key",
+            payload = mapper.writeValueAsString(wj), payloadHash = "hash", correlationId = "corr",
+            state = WarehouseJobOutboxState.SUCCEEDED
+        )
+        val command = WarehouseJobOutbox(
+            outboxId = "si-1", billingInvoiceId = local.billingInvoiceId, payloadVersion = 1,
+            operation = WarehouseJobOutboxOperation.CREATE_OR_LINK_SI, idempotencyKey = "si-key",
+            dependencyOutboxId = predecessor.outboxId,
+            payload = mapper.writeValueAsString(mapOf("externalReference" to "WMS-SI-wmsinv-1-V1")),
+            payloadHash = "si-hash", correlationId = "corr"
+        )
+        Mockito.`when`(binding.load(command)).thenReturn(local)
+        Mockito.`when`(outbox.findById(predecessor.outboxId)).thenReturn(Optional.of(predecessor))
+        Mockito.`when`(finance.findInvoiceByExternalReference("WMS", "WMS-SI-wmsinv-1-V1", "jwt"))
+            .thenReturn(InvoiceLookupResult.NotFound)
+        var created: CreateFreighAiInvoiceRequest? = null
+        Mockito.`when`(finance.createInvoiceV1(anyObj(), eqv("si-key"), eqv("jwt"))).thenAnswer {
+            created = it.arguments[0] as CreateFreighAiInvoiceRequest
+            InvoiceV1CreationResult.Rejected("stop after capturing the request")
+        }
+        handler.handle(command, "jwt")
+        return requireNotNull(created).lineItems
+    }
+
     private fun invoice() = WmsBillingInvoice(
         billingInvoiceId = "wmsinv-1", customerId = 7, billingMonth = "2026-09",
         status = BillingInvoiceStatus.DRAFT,

@@ -29,7 +29,8 @@ class BillingRunController(
     private val invoiceRepository: WmsBillingInvoiceRepository,
     private val billingProfileRepository: com.wmspro.tenant.billing.profile.CustomerBillingProfileRepository,
     private val summaryRepository: BillingRunSummaryRepository,
-    private val customerNameResolver: CustomerNameResolver
+    private val customerNameResolver: CustomerNameResolver,
+    private val discardService: com.wmspro.tenant.billing.warehousejob.orchestration.WarehouseJobDiscardService
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -225,6 +226,35 @@ class BillingRunController(
             )
         }
     }
+    /**
+     * Discard an invoice that was never sent, so its month can be generated again - typically after
+     * the customer's billing settings changed. Cancels whatever reached FreighAI (a draft Sales
+     * Invoice, the Warehouse Job) and frees the month; refused once it was sent, or when it bills
+     * GRNs, GINs or services, which stay claimed by it.
+     */
+    @PostMapping("/discard/{billingInvoiceId}")
+    fun discard(
+        @PathVariable billingInvoiceId: String,
+        @Valid @RequestBody request: CancelBillingInvoiceRequest,
+        httpRequest: HttpServletRequest
+    ): ResponseEntity<ApiResponse<WmsBillingInvoiceResponse>> {
+        val authToken = httpRequest.getHeader(HttpHeaders.AUTHORIZATION).orEmpty()
+        val userEmail = httpRequest.getHeader("X-User-Email") ?: "unknown"
+        return try {
+            val discarded = discardService.discard(billingInvoiceId, request.reason, userEmail, authToken)
+            ResponseEntity.ok(ApiResponse.success(discarded.toResponse(), "Invoice discarded; the month can be generated again"))
+        } catch (e: NoSuchElementException) {
+            ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.message ?: "Not found"))
+        } catch (e: IllegalArgumentException) {
+            ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(e.message ?: "Invalid request"))
+        } catch (e: IllegalStateException) {
+            logger.warn("discard refused for {}: {}", billingInvoiceId, e.message)
+            ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(e.message ?: "Discard refused"))
+        } catch (e: Exception) {
+            logger.error("discard failed for {}", billingInvoiceId, e)
+            ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("Discard failed: ${e.message}"))
+        }
+    }
 }
 
 /**
@@ -299,8 +329,21 @@ internal fun WmsBillingInvoice.toResponse(customerNamesById: Map<Long, String> =
     cancelledAt = cancelledAt,
     cancelledBy = cancelledBy,
     cancelReason = cancelReason,
-    displayStatus = if (generationContractVersion == "WAREHOUSE_JOB_V1" && storageLines.isEmpty() && movementLines.isEmpty() && serviceLines.isEmpty()) "COST_ONLY" else deriveDisplayStatus(status, freighaiStatus),
+    displayStatus = if (generationContractVersion == "WAREHOUSE_JOB_V1" && storageLines.isEmpty() && movementLines.isEmpty() && serviceLines.isEmpty()) "COST_ONLY" else deriveDisplayStatus(status, freighaiStatus, warehouseJobSyncState),
     manuallyEdited = manuallyEdited,
     editedLineItems = editedLineItems,
-    editHistory = editHistory
+    editHistory = editHistory,
+    // The Warehouse Job hand-off, so the screens can tell an invoice still being sent from one
+    // that failed, show why, and offer Retry or Discard. Never mapped before, which left every
+    // invoice reading "Pre-feature - no Warehouse Job" and every failure as "Generating...".
+    generationContractVersion = generationContractVersion,
+    warehouseJobId = warehouseJobId,
+    warehouseJobNumber = warehouseJobNumber,
+    warehouseJobExternalReference = warehouseJobExternalReference,
+    warehouseJobPayloadVersion = warehouseJobPayloadVersion,
+    warehouseJobPayloadHash = warehouseJobPayloadHash,
+    warehouseJobSyncState = warehouseJobSyncState,
+    warehouseJobStatus = warehouseJobStatus,
+    warehouseJobLastSyncedAt = warehouseJobLastSyncedAt,
+    warehouseJobLastError = warehouseJobLastError
 )

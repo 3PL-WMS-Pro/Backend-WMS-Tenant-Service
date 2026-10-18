@@ -187,6 +187,12 @@ class WarehouseJobPayloadBuilder(objectMapper: ObjectMapper) {
                 servicePeriodEnd = month.atEndOfMonth(),
                 projectBucket = invoice.projectCode ?: "DEFAULT",
                 projectCode = invoice.projectCode,
+                // A customer invoiced per warehouse has one job per warehouse a month; FreighAI
+                // keys its monthly bucket on this, so it must be sent for those to coexist.
+                warehouseId = invoice.warehouseId,
+                warehouseName = invoice.warehouseId?.let { id ->
+                    invoice.storageLines.firstNotNullOfOrNull { it.warehouseName?.takeIf { _ -> it.warehouseId == id } } ?: id
+                },
                 sourceContentHash = sourceHash,
                 chargeContentHash = chargeHash,
                 calculationVersion = calculationVersions.singleOrNull() ?: "WMS_COST_V1",

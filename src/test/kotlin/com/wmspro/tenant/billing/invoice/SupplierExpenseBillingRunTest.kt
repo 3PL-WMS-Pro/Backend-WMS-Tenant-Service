@@ -70,7 +70,7 @@ class SupplierExpenseBillingRunTest {
             mock(TenantBillingDefaultsService::class.java), mock(TenantOperationalCostsService::class.java),
             mock(BillingRunCostSnapshotRepository::class.java), mock(MovementCostAdjustmentService::class.java),
             generator, names, expenses, mock(SupplierExpenseSyncService::class.java),
-            mock(WarehouseAttribution::class.java), mock(BillingInvoiceIndexMigration::class.java))
+            mock(WarehouseAttribution::class.java), mock(BillingInvoiceIndexMigration::class.java), mock(DiscardedBillingInvoices::class.java))
         ReflectionTestUtils.setField(service, "aedCurrencyId", "CUR-AED")
         ReflectionTestUtils.setField(service, "palletWiseCountingFrom", "2026-10")
         assertEquals(1, service.generate(42, month.toString(), "manager", "token").size)

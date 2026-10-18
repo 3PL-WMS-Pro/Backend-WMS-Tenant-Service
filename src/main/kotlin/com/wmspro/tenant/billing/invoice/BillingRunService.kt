@@ -100,7 +100,8 @@ class BillingRunService(
     private val supplierExpenses: com.wmspro.tenant.billing.adjustment.SupplierExpenseService,
     private val supplierExpenseSync: com.wmspro.tenant.billing.adjustment.SupplierExpenseSyncService,
     private val warehouseAttribution: WarehouseAttribution,
-    private val invoiceIndexMigration: BillingInvoiceIndexMigration
+    private val invoiceIndexMigration: BillingInvoiceIndexMigration,
+    private val discardedInvoices: DiscardedBillingInvoices
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -323,14 +324,23 @@ class BillingRunService(
         // unmarked tuples remain legacy even if their row is deleted as part
         // of the existing retry semantics above.
         val useWarehouseJobV1 = !tupleWasLegacy
-        // The warehouse is appended only when present, so ids and references of customers billed
-        // as one stay byte-identical to before.
+        // A month whose earlier invoice was discarded still has that invoice's cancelled Sales
+        // Invoice and Warehouse Job in FreighAI under the original identity, so the regeneration
+        // takes its own: the second is R2, the third R3. Null for a first generation.
+        val regeneration = if (useWarehouseJobV1) {
+            discardedInvoices.countFor(customerId, projectCode, warehouseId, billingMonth).takeIf { it > 0 }?.plus(1)
+        } else {
+            null
+        }
+        // The warehouse and regeneration are appended only when present, so ids and references of
+        // every other invoice stay byte-identical to before.
         val billingInvoiceId = if (useWarehouseJobV1) {
-            "wmsinv_${stableHash("$customerId|${projectCode ?: "DEFAULT"}|$billingMonth" + (warehouseId?.let { "|$it" } ?: "")).take(16)}"
+            "wmsinv_${stableHash("$customerId|${projectCode ?: "DEFAULT"}|$billingMonth" + (warehouseId?.let { "|$it" } ?: "") + (regeneration?.let { "|R$it" } ?: "")).take(16)}"
         } else {
             "wmsinv_${UUID.randomUUID().toString().replace("-", "").take(16)}"
         }
-        val referenceNo = "WMS-$customerId-${projectCode ?: "default"}-$billingMonth" + (warehouseId?.let { "-$it" } ?: "")
+        val referenceNo = "WMS-$customerId-${projectCode ?: "default"}-$billingMonth" + (warehouseId?.let { "-$it" } ?: "") +
+            (regeneration?.let { "-R$it" } ?: "")
 
         // Pre-create DRAFT row.
         val now = Instant.now()

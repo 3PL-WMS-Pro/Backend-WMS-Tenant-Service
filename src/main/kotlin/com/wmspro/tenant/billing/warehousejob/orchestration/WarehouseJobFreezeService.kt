@@ -93,9 +93,9 @@ class WarehouseJobFreezeService(
         }
 
         val payloadVersion = 1L
-        // One Warehouse Job per invoice, so a per-warehouse invoice's reference carries its warehouse.
-        val externalReference = "WMS-${candidateInvoice.customerId}-${candidateInvoice.projectCode ?: "default"}-${candidateInvoice.billingMonth}" +
-            (candidateInvoice.warehouseId?.let { "-$it" } ?: "")
+        // One Warehouse Job per invoice: the invoice's own reference, which carries its warehouse
+        // when invoiced per warehouse and its regeneration (-R2) when an earlier one was discarded.
+        val externalReference = candidateInvoice.freighaiReferenceNo
         val markedSnapshots = candidateSnapshots.map { snapshot ->
             require(snapshot.billingInvoiceId == candidateInvoice.billingInvoiceId) { "Snapshot belongs to another invoice" }
             require(!snapshot.costTreatment.isNullOrBlank()) { "V1 snapshot requires explicit costTreatment" }

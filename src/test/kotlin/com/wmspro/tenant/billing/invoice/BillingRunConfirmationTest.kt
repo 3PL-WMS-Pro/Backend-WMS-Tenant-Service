@@ -11,7 +11,7 @@ class BillingRunConfirmationTest {
     private val service = mock(BillingRunService::class.java)
     private val invoices = mock(WmsBillingInvoiceRepository::class.java)
     private val summaries = mock(BillingRunSummaryRepository::class.java)
-    private val controller = BillingRunController(service, invoices, mock(CustomerBillingProfileRepository::class.java), summaries, mock(CustomerNameResolver::class.java))
+    private val controller = BillingRunController(service, invoices, mock(CustomerBillingProfileRepository::class.java), summaries, mock(CustomerNameResolver::class.java), mock(com.wmspro.tenant.billing.warehousejob.orchestration.WarehouseJobDiscardService::class.java))
     private val http = MockHttpServletRequest().apply { addHeader("X-User-Email", "manager@example.com") }
 
     @Test

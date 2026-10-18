@@ -165,9 +165,18 @@ data class WmsBillingInvoiceResponse(
  * the logic on the server so the same mapping applies to detail + list +
  * any future surface (PDF cover, emails, etc.).
  */
-fun deriveDisplayStatus(wmsStatus: BillingInvoiceStatus, freighaiStatus: String?): String {
+fun deriveDisplayStatus(
+    wmsStatus: BillingInvoiceStatus,
+    freighaiStatus: String?,
+    warehouseJobSyncState: WarehouseJobSyncState? = null
+): String {
     if (wmsStatus == BillingInvoiceStatus.CANCELLED) return "CANCELLED"
     if (wmsStatus == BillingInvoiceStatus.SUBMISSION_FAILED) return "FAILED_TO_SEND"
+    // A Warehouse Job hand-off that stopped needs someone to retry or discard it; nothing will
+    // pick it up on its own, so it must not read as still generating.
+    if (wmsStatus == BillingInvoiceStatus.DRAFT &&
+        warehouseJobSyncState in setOf(WarehouseJobSyncState.MANUAL_REVIEW, WarehouseJobSyncState.FAILED)
+    ) return "FAILED_TO_SEND"
     if (wmsStatus == BillingInvoiceStatus.DRAFT) return "GENERATING"
     // wmsStatus == SUBMITTED below
     return when (freighaiStatus?.uppercase()) {
